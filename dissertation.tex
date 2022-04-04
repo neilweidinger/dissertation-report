@@ -2,11 +2,20 @@
 \documentclass[bsc,frontabs,singlespacing,parskip,deptreport,normalheadings]{infthesis}
 
 \usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[bookmarks=true]{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=cyan,
+}
+\usepackage{bookmark}
+\usepackage{quiver}
 
 \begin{document}
 \begin{preliminary}
 
-\title{This is the Project Title}
+\title{Need for Speed: Latency-Hiding Work-Stealing}
 
 \author{Neil Weidinger}
 
@@ -52,19 +61,163 @@ Acknowledgements go here.
 
 \chapter{Introduction}
 
+This chapter provides a brief introduction and motivation to the problem of
+latency-hiding work stealing, as well as the aims of this project. An outline of
+the report is provided.
+
 \section{Motivation}
+
+Exploiting the parallel nature of modern processors is critical to achieving
+high performance. In an era where even entry-level consumer tier hardware
+features-shared memory parallelism, the need for software to be written that
+makes efficient use of these resources is key to unlocking efficiency gains.
+Unfortunately, the difficulty involved with the writing of parallel programs by
+explicitly specifying which computations should map to which processor is
+non-trivial and prone to introducing errors. Programmers need to manually
+schedule computations and enforce synchronization using low-level primitives
+such as locks and atomic operations, that are highly vulnerable to subtle and
+non-deterministic errors like race conditions and deadlocking.
+
+This backdrop of the need to embrace parallelism has spurred the advancement of
+significant research and development in programming languages and paradigms to
+help assist writing such programs. One such paradigm is
+\textit{\textbf{fork-join}} parallelism \cite{conway_multiprocessor_1963,
+nyman_notes_2016}, where programs can begin parallel execution at ``fork''
+points and ``join'' to merge back and resume sequential execution again. This
+alleviates the programmer from having to manually managing parallel computation:
+one needs to only express the \textbf{\textit{logical}} opportunities for
+\textit{\textbf{possible}} parallelism, decoupling the programmer from the
+underlying runtime that takes care of handling scheduling and execution.
+
+Such an underlying runtime to manage parallelism while the program executes must
+feature a \textit{\textbf{scheduler}} to determine an efficient parallel
+execution. Runtime implementations such as Cilk
+\cite{frigo_implementation_1998}, the Java Fork/Join framework
+\cite{lea_java_2000}, and TBB \cite{noauthor_advanced_nodate}, commonly employ
+\textbf{\textit{work-stealing}} \cite{blumofe_cilk_1995}, a class of schedulers designed to deal with the
+problem of dynamically multithreaded computations on statically multithreaded
+hardware. In brief, work-stealing schedulers take care
+of scheduling and the accompanying issue of load balancing available work by
+using a fixed pool of worker threads that are each responsible for maintaining a
+local deque to keep track of this work. Worker threads execute work from the
+bottom of their local deque, and when they run out of work they become
+\textit{\textbf{thieves}} and \textit{\textbf{steal}} from the top of the deques
+of other randomly selected worker threads.
+
+Work-stealing has shown itself to be a very efficient approach to implementing
+fork-join parallelism. Such schedulers have strong theoretical performance
+guarantees \cite{blumofe_scheduling_1999} as well as proving themselves in
+practice \cite{arora_thread_1998}. Research on work-stealing has proven fruitful
+in the domain of traditional fine-grained parallelism, such as in
+high-performance and scientific computing where workloads are dominated by
+computational tasks: operations rarely incur latency and nearly all of the time
+a processor spends executing an operation is useful work. General modern
+workloads running on parallel architectures, however, frequently involve large
+degrees of operations that do incur latency, commonly in the form of I/O:
+waiting for user input, communicating to a remote client or server, dealing with
+hardware peripherals, etc. In such environments, classic work-stealing
+schedulers can suffer from large performance implications, depending on how much
+latency is incurred while executing the workload.
+
+Classic work-stealing schedulers have no notion of latency-incurring operations
+nor incorporate them into the design of the scheduling algorithm. A worker
+thread that encounters a latency-incurring operation is
+\textbf{\textit{blocked}}: it is performing no useful work, and is simply
+wasting time waiting for the blocking operation to complete. Latency-incurring
+operations cause underutilization of the available hardware resources,
+potentially significantly impacting performance. An alternative to blocking
+operations are to use \textbf{\textit{asynchronous}} (i.e. non-blocking) I/O
+operations, but those come with their own set of challenges of managing
+concurrent control flow \cite{niebler_structured_2020, smith_notes_nodate}.
+
+Under such workloads, large performance gains can be made from having either the
+latency-incurring operation cooperatively yield or the scheduler forcibly
+preempting the operation, and allowing another task that could be performing
+useful work to run instead. This allows the latency incurring operation to wait
+out its latency in the background even while all hardware resources are being
+fully utilized on other tasks, thus \textbf{\textit{hiding}} the latency. Singer
+et. al \cite{singer_proactive_2019}, introduce a latency-hiding work-stealing
+scheduling algorithm, \textit{\textbf{ProWS}}, that utilizes
+\textbf{\textit{futures}} (a parallel language construct
+\cite{halstead_implementation_1984, halstead_multilisp_1985}) to represent and
+schedule latency-incurring operations. Futures can be \textbf{\textit{spawned}}
+to begin parallel execution, and return a handle future handle that can be
+\textbf{\textit{touched}} (also commonly called \textbf{\textit{await}} or
+\textbf{\textit{get}}) at a later point to retrieve the value of the operation.
+ProWS, by proactively stealing whenever the scheduling algorithm encounters a
+blocked future, can provide better bounds on execution time and other
+performance metrics than previous work \cite{muller_latency-hiding_2016,
+spoonhower_beyond_2009}.
+
+Scheduling futures is only one part of the equation to fully support
+latency-hiding work-stealing: a runtime system to efficiently dispatch and
+process latency-incurring operations is also necessary. The use of futures to
+hide latency is not much help if worker threads themselves must incur the cost
+of awaiting futures; dedicated I/O threads and integration with operating system
+event notification facilities is required. Singer et. al
+\cite{singer_scheduling_2019} present an extension of Cilk, called Cilk-L, that
+incorporates such runtime support with encouraging results.
+
+TODO: better transition to talking about Rust
+
+Rust \cite{matsakis_rust_2014} is a relatively new systems level programming
+language aimed at delivering the low-level abilities and performance
+characteristics of languages like C and C++, while ensuring far greater levels
+of memory and thread safety. It achieves this by using a rich static type
+system to allow the compiler to infer when and how values are safe to use,
+termed the ``borrow checker''. It also has first class support for asynchronous
+programming through the use of futures (futures in Rust have some idiosyncrasies
+described in section \ref{section:futures}) and a quickly growing
+ecosystem surrounding asynchronous programming in Rust. Rayon
+\cite{noauthor_baby_nodate, stone_how_2021} is a widely-used library level
+implementation (Cilk and its derivatives consist of a both Cilk to C level
+compiler and a runtime library) of work-stealing that supports task-level
+fork-join parallelism, but without latency-hiding.
+
+Futures in Rust, unlike the hand-written futures used in Cilk-L, are easily
+composable: the compiler automatically generates a state machine that represents
+the current state of an asynchronous operation. This allows for ergonomic user
+defined asynchronous operations that highly resemble regular sequential code and
+powerful future combinators \cite{noauthor_futuresfuture_nodate}. Supporting
+this behavior requires a few additional capabilities than what ProWS provides
+directly.
+
+\section{Aims}
+
+The aim of this project is to provide an implementation, building heavily upon
+the work of Singer et. al, of latency-hiding work-stealing that seamlessly
+integrates with the Rust language and ecosystem.
+
+This report describes the
+design, implementation, and evaluation of ProWS-R, a variant of ProWS that is
+adapted for the particular futures found in Rust and its stringent safety
+guarantees.
+
+This report describes ProWS-R, a variant of ProWS that is designed for the
+particular futures found in Rust, as well as taking careful consideration with
+regards to the stringent safety guarantees and ergonomics of the language. The
+implementation and subsequent evaluation of ProWS-R are ???
+
+The explicit goals of this project are as follows:
+
+\begin{itemize}
+    \item TODO: explicit goals
+    \item Present a latency-hiding work-stealing algorithm, that takes
+        accommodates the language-level futures construct in Rust
+    \item Develop a prototype implementation of 
+\end{itemize}
 
 \section{Contributions}
 
-\section{Report outline}
+\section{Report Outline}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\chapter{Background}
+\chapter{Background: What Andy Giveth, Bill Taketh}
 
 Describe and outline background chapter.
 
-\section{Modern computer architecture}
+\section{Modern Computer Architecture}
 
 Ever since the advent of general-purpose microprocessor based computer systems,
 transistor density has been doubling roughly every two years. Famously known as
@@ -93,19 +246,22 @@ all while keeping a reasonable energy envelope.
 
 But starting around 2005, Dennard scaling has broken down: processors have
 reached the physical limits of power consumption in order to avoid thermal
-runaway effects that would require prohibitive cooling solutions. This is known
-as the power wall, and chip designers could no longer regularly rely on
-increasing clock frequencies to deliver performance gains
-\cite{parkhurst_single_2006}. The multicore era was born.
+runaway effects that would require prohibitive cooling solutions (CPU chips that
+would melt would likely be difficult to sell to customers). This is known as the
+power wall, and chip designers could no longer regularly rely on increasing
+clock frequencies to deliver performance gains \cite{parkhurst_single_2006}. The
+multicore era was born.
 
-\subsection{Rise of the multicore era}
+\subsection{Rise of the Multicore Era}
 
-Thankfully, Moore's law is still going strong, but instead of being dedicated to
-more complex architectural features in order to extract sequential performance
-in single core processors, the extra transistors are largely used to build more
-cores. With diminishing returns on effort spent increasing single core
-performance, chip designers look to add multiple cores to be able to execute
-more instructions in parallel.
+While the doubling of transistor count observation of Moore's law is still going
+strong, the historic predictable free performance lunch it became associated
+with is no longer what is once was. Instead of being dedicated to more complex
+architectural features in order to extract sequential performance on single core
+processors, the extra transistors are largely used to build more cores on a
+single processor. With diminishing returns on effort spent increasing single
+core performance, chip designers look to add multiple cores to be able to
+execute more instructions in parallel.
 
 CPU performance can be described using the following equation
 \cite{patterson_computer_2021}, where performance is measured in terms of
@@ -117,54 +273,735 @@ where CPI is average clock cycles per instruction. No longer able to increase
 the clock frequency due to the power wall and increasing difficulty reducing
 CPI, efforts of hardware architects focused on simply reducing program
 instruction count per processor, by distributing instructions across multiple
-CPU cores to be executed in parallel.
+CPU cores to be executed in parallel \cite{etiemble_45-year_2018}.
 
 Multicore processors are microprocessors containing multiple processors in a
 single integrated circuit, where each of these processors is known as a core.
 Almost all commodity multicore processors today are \textit{symmetric
 multiprocessing (SMP)} systems, meaning all cores in a processor share the same
 physical address space. A single physical address space allows cores to operate
-on shared data. Armed with multiple cores, different programs or different parts
+on shared data.
+
+Armed with multiple cores, different programs or different parts
 of the same program can be run at the same time in parallel, reducing the time
 required to perform the same amount of work on a single processor, boosting
-performance.
-
-Other variations of the multiprocessor philosophy (essentially running workloads
-on multiple processors in parallel) can be found in other approaches to parallel
-computing, for example network connected cluster based designs often found in
-the High Performance Computing (HPC) domain. These approaches will not be
-discussed in this report, although the ideas described could possibly be
-transferable.
+performance. No longer limited to a single processor core executing work,
+programs stand to drastically benefit in execution throughput by being run on
+multiple cores simultaneously.
 
 As of 2021, it is difficult to find a processor that is not a multicore
 processor. The performance gains provided by having multiple cores have shown to
 be so profound that even the lowest end chips feature multiple cores. The
-recently released Raspberry Pi Zero 2, a \pounds13.50 board in the Raspberry Pi
-family of low cost single-board computers, features a 64-bit quad-core Arm Cortex-A53
-CPU.
+Raspberry Pi Zero 2, a \pounds13.50 board in the Raspberry Pi family of low cost
+single-board computers, features a 64-bit quad-core Arm Cortex-A53 CPU.
 
-Initially multicore processors may seem like a silver bullet to the question of
-what to do when faced with the power wall: for more performance simply scale the
-number of cores! In reality, as is typical, the situation is more nuanced. Many
-workloads cannot be trivially diced up and processed on multiple cores, and even
-if so, support for splitting up work and then computing this work in parallel
-must be explicitly supported and designed for.
+Initially, multicore processors may seem like a silver bullet to the question of
+what to do when faced with the power wall: for more performance, simply scale
+the number of cores! In reality, as is typical, the situation is more nuanced.
+Many workloads cannot be trivially diced up and processed on multiple cores, and
+even if so, support for splitting up work and then computing this work in
+parallel must be explicitly supported and designed for.
 
-\subsection{Parallel computing and its difficulties}
+\subsection{Parallel Computing and its Difficulties}
+\label{section:parallel_computing}
 
-Even if the hardware a given piece of software is running on features multiple
-cores that can be run in parallel, the software must be carefully designed such
-that it actually takes advantage of the multiple processing units. 
+Although multiple cores on a single chip running in parallel offer tantalizing
+performance benefits, there is one catch: programmers must write explicitly
+parallel programs. Software must be carefully designed such that it actually
+takes advantage of multiple processing units: a single-threaded application
+running on an 8 core CPU can only take advantage of 1/8 of such a chips
+potential throughput. Worst of all, after about nearly two decades of experience
+since the introduction of the first multicore processors, experience has shown
+that compared to traditional sequential programming, parallel programming is
+simply very difficult \cite{creeger_multicore_2005, lee_problem_2006,
+patterson_trouble_2010}.
 
-\subsubsection{Amdahl's Law}
+\begin{itemize}
+    % TODO
+    \item There are many things a programmer must be aware of when writing
+        parallel programs (\textbf{CONDENSE})
+    \begin{itemize}
+        \item Synchronization of memory accesses
+        \item Synchronization of control flow
+        \item Memory ordering
+        \item Race conditions
+        \item Deadlocks/livelocks
+        \item Lock-free programming
+        \item Atomic operations
+        \item Workload partitioning
+        \item Workload balancing
+        \item Scheduling
+    \end{itemize}
+\end{itemize}
+
+Before the introduction of mainstream multicore processors, code was written
+with the intention of being executed in serial on a single core processor. Once
+CPU hardware started featuring multiple cores, programs did not magically
+rewrite themselves to take advantage of this increased firepower. Instead,
+developers had to manually identify the existing parallelism in their programs
+and refactor them to run as multiple computational threads.
+
+Threads are an abstraction of units of scheduling and execution: the same
+program can have multiple threads of execution running concurrently. A
+\textit{\textbf{thread scheduler}} manages these threads \footnote{Typical thread
+    schedulers however have no knowledge of the thread workloads; all threads
+    are opaque to the scheduler: the scheduler does not know whether a given
+    thread has operations that must complete before operations in another
+    thread, the scheduler simply chooses a thread to run according to its
+scheduling algorithm (that typically tries to schedule all threads
+fairly/evenly) and it is up to the programmer to explicitly program this thread
+synchronization.} and chooses when they should run on the CPU. Multicore
+processors allow threads to truly run in parallel, instead of just concurrently
+as would happen on a single core processor, as multiple cores can each be
+executing a thread simultaneously.
+
+Threads are the most common approach to concurrent programming and by extension
+parallel programming, but are notoriously difficult to use efficiently and
+and ensure correctness with \cite{lee_problem_2006}.
+
+Other approaches to parallel computing, for example network connected cluster
+based designs frequently found in the high performance computing (HPC) domain,
+will not be discussed in this report, although the ideas described could
+possibly be transferable.
+
+Not only does software need to be written with the above concepts in mind, there
+is an inherent limit to how much a given program can even take advantage of the
+parallelism offered by multiple processors. Not all program can benefit from
+being run in parallel, and those that do have their maximum theoretical speedups
+capped by Amdahl's Law.
+
+% TODO
+\subsection{Amdahl's Law (REMOVE)}
+
+Amdahl's law provides an upper bound to the potential speedup a program can
+benefit from when the performance of a portion of the program is improved, and
+is often used in parallel computing to predict the maximum theoretical speedup
+when using multiple processors. A program that required \(T_\text{old}\) time to
+execute that now has a fraction \(\alpha\) of it running in parallel on \(k\)
+processors has a theoretical speedup \(S = T_\text{old} / T_\text{new}\) of \[ S
+= \frac{1}{(1 - \alpha) + \alpha / k} \]
+
+A derivation can be found in \cite{bryant_computer_2016}. If we consider setting
+\(k\) to \(\infty\), we can see the maximum possible speedup \(S_\infty\) of a
+program running on an infinite number of processors is \(1 / (1 - \alpha)\). The
+major insight of Amdahl's law is that to speed up the entire program, the speed
+of a very large fraction of the program must be significantly improved, and even
+then there is an upper bound on the possible speedup that can be achieved. In
+other words, a program that wishes to take advantage of being run in parallel
+must exhibit an ample amount of parallelism (fraction of the program that can be
+run in parallel) to demonstrate an advantage when compared to running on a
+single processor.
 
 \section{Classical work stealing}
 
-\section{Survey of related work}
+\subsection{Motivating Examples}
+
+\begin{itemize}
+    \item Fibonacci example for compute bound
+    \item Include latency incurring example here in BG chapter, or later?
+\end{itemize}
+
+\subsection{DAG model of Parallel Computations}
+
+\begin{itemize}
+    \item Taken largely from \cite{cormen_introduction_2009, herlihy_art_2012,
+        blumofe_executing_1995}
+    \item With typical sequential computing, all instructions can be defined as
+        a totally ordered set of instructions, where the ordering specifies the
+        execution order. With multithreaded computing, a computation can be
+        defined as a partially ordered set of instructions, which may be
+        executed in any order that complies with the partial ordering.
+    \item This partial ordering in a multithreaded computation can be
+        represented as a DAG \(G = (V, E)\)
+    \item Each node in \(V\) represents an instruction to be executed
+    \item Each directed edge in \(E\) represents dependencies between
+        instructions
+    \begin{itemize}
+        \item Edge \((u,v) \in E\) means that instruction \(u\) must execute
+            before instruction \(v\)
+        \item A horizontal edge, called \textbf{continuation} edges, represents
+            the sequential ordering in a given thread (threads are the
+            horizontal shaded blocks of sequential instructions)
+        \item A thread can spawn another thread, which is indicated by a
+            downward edge originating from a \textbf{spawn instruction}. Spawn
+            instructions, the instruction that actually performs the spawn
+            operation, are the only nodes with outdegree of 2. Spawns introduce
+            parallelism: instructions in different threads can execute
+            concurrently, and by extension execute in parallel.
+        \item An upward edge, called a \textbf{join edge}, represents points of
+            synchronization: instruction nodes that have incoming join edges
+            wait until all previous instructions have executed before
+            proceeding.
+    \end{itemize}
+    \item If a directed path exists between \(u\) and \(v\), they are
+        (logically) in series, and execute serially just like in typical
+        serial programs (doesn't say anything about when they're executed,
+        only that they must not execute in parallel and must execute in
+        order specified)
+    \item Otherwise if a path does not exist, they are (logically) in
+        parallel, meaning they \textit{\textbf{may}} execute in parallel (does not specify
+        that they \textit{\textbf{will}} execute in parallel, only that at runtime a
+        scheduler is allowed to choose to run them in parallel by assigning
+        them to available processors)
+\end{itemize}
+
+\subsection{Analysis of Parallel Computations}
+
+\begin{itemize}
+    \item To analyze the theoretical performance of multithreaded program, we
+        need a more formal way of describing the efficiency of such programs
+    \item Let \(T_P\) be the running time of a multithreaded program run on
+        \(P\) processors
+    \item The \textbf{work} of a computation is the total time required to
+        execute each computation node in the DAG. In other words, work is the
+        time required to execute the computation on a single processor: \(T_1\).
+    \item The \textbf{span} of a computation is the length of the longest
+        sequence of computations that need to be executed serially, due to
+        computation dependencies represented as edges in the DAG. In other
+        words, the span is the running time if the computation could be run on
+        an infinite number of processors, denoted by \(T_\infty\).
+    \item Ideally, to reduce execution time, a computation minimizes the work
+        and span
+    \item Using the above two definitions, we arrive at two very useful results:
+    \begin{itemize}
+        \item \textbf{Work law:} Since \(P\) processors can perform at most
+            \(P\) operations in one time step, the total amount of work
+            performed in \(T_P\) time is \(P T_P\). Since the total amount of
+            work to be done is \(T_1\), we see that \[P T_P \geq T_1\] This can
+            also be interpreted as the fact that the time \(T_P\) to run the
+            computation on \(P\) processors is at least the time taken to run on
+            one processor \(T_1\) divided by the number of processors \(P\):
+            \[T_P \geq T_1 / P\]
+        \item \textbf{Span law:} Since the time taken to run a computation on a
+            finite number of processors \(P\) cannot be faster than the time
+            taken on an infinite number of processors, we have \[T_P \geq
+            T_\infty\]
+    \end{itemize}
+    \item Now we can define a few useful performance metrics:
+    \begin{itemize}
+        \item \textbf{Speedup:} Defined by the ratio \(S_P = T_1 / T_P\),
+            expressing how much faster the computation is on \(P\) processors
+            than on 1 processor. Rearranging the work law, we see that \(T_1 /
+            T_P \leq P\), meaning that the speedup gained by running on \(P\)
+            processors is at most \(P\). When the speedup scales linearly
+            with the number of processors \(T_1 / T_P = \Theta(P)\), we have
+            \textit{\textbf{linear speedup}}, and when \(T_1 / T_P = P\) we have
+            \textit{\textbf{perfect linear speedup}}.
+        \item \textbf{Parallelism:} The amount of \textit{\textbf{parallelism}} in a
+            computation is expressed by the ratio \(T_1 / T_\infty\). This
+            represents the average number of computations that can be performed
+            in parallel at \textit{\textbf{each step}} along the critical path. This is
+            also the maximum possible speedup that can be achieved on any number
+            of processors (using the span law: \(T_1 / T_P \leq T_1 /
+            T_\infty\)). We see that there is not much point in using
+            \(P\) processors when \(P > T_1 / T_\infty\), as the extra
+            processors will just be idle not performing work.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Scheduling}
+
+\begin{itemize}
+    \item Our model of multithreaded computation does not specify which
+        instructions to run on which processors at what point in time: this is
+        the job of the \textbf{scheduler}.
+    \item A scheduler constructs an \textbf{execution schedule} that maps
+        instruction nodes in the multithreaded computation DAG to processors at
+        each step in time \footnote{In practice, our scheduler that breaks down
+            the multithreaded DAG is a user-space scheduler that maps
+            instructions on to threads (as many as there are processors), and an
+            operating system level thread scheduler then schedules these OS
+            level threads. In other words, a userspace scheduler maps
+        instruction nodes onto a fixed number of OS threads, and the kernel
+    level scheduler maps these threads onto hardware processor cores.}. A
+    typical goal for a scheduler is to reduce absolute execution time (we later
+    prove asymptotic bounds for our scheduler in terms of the work and span). At
+    any given point in time a processor is either active or idle; a scheduler
+    tries to minimize the amount of time a processor sits idle.
+    \item An execution schedule must satisfy all constraints given
+    by the edges
+        present in the DAG, such that the partial ordering of instructions is
+        satisfied.
+    \item As mentioned in section \ref{section:parallel_computing}, programmers
+        can themselves schedule when threads in their programs should be run as
+        well as ensure proper synchronization. This low-level manual thread
+        orchestration, however, becomes increasingly difficult with the number
+        of threads involved, especially when shared resources and thread
+        synchronization are required: the sheer number of possible interleavings
+        of code execution quickly becomes unwieldy. Not only are threads
+        difficult to reason about conceptually, it is also important for the
+        programmer to perform efficient load balancing of processors to optimize
+        utilization of available computing resources. A programmer would have to
+        manually use complex communication protocols to ensure each thread
+        receives a balanced amount of work to execute, which can be difficult
+        and error prone.
+    \item An easier approach is to raise the level of abstraction, and instead
+        only require programmers to merely \textit{\textbf{expose}} sections of possible
+        parallelism in their programs, while letting a runtime system take care
+        of the thread creation and building an execution schedule. The runtime
+        systems in turn then becomes responsible for such a schedule that not
+        only satisfies all ordering constraints, but also achieves high
+        performance and efficiency.
+\end{itemize}
+
+\subsection{Work Stealing}
+\label{subsection:work_stealing}
+
+\section{Futures}
+\label{section:futures}
+
+TODO: put general stuff about futures concept here
+
+\subsection{Futures in Rust}
+
+TODO: describe how futures in Rust work here (e.g. state machine, async fns,
+executors, pinning, etc.)
+
+\subsection{Futures and DAGs}
+
+TODO: describe how futures can be incorporated into analysis of parallel
+computations using DAG model
+
+\section{Survey of Related Work}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\chapter{Conclusions}
+\chapter{Conceptual Latency-Hiding: To Wait Or Not to Wait?}
+
+This chapter describes the high-level overview of the ProWS-R latency-hiding
+work stealing algorithm, without diving into the details of the implementation.
+Section \ref{section:overview_of_the_prows_algorithm} provides an overview of
+the core scheduling algorithm, and the considerations that allow for nested and
+repeatedly polled futures. Section
+\ref{section:required_runtime_support_for_latency_hiding} describes the
+additional runtime support necessary to provide the latency-hiding capabilities
+of the scheduler.
+
+
+\section{The ProWS-R Algorithm}
+\label{section:overview_of_the_prows_algorithm}
+
+This section is heavily based on the work done in \cite{singer_proactive_2019},
+where the authors introduce the ProWS scheduling algorithm. ProWS is a provably
+efficient algorithm that introduces support for the generalized concept of
+futures, that deviates from traditional work-stealing algorithms by being
+\textit{\textbf{proactive}}, detailed in section 
+\ref{subsection:parsimonious_vs_proactive_work-stealing}. Presented here is an
+exposition of the ProWS-R algorithm, a variant of ProWS, with details on the
+considerations taken to support the Rust implementation of futures.
+
+\subsection{Parsimonious vs Proactive Work-Stealing}
+\label{subsection:parsimonious_vs_proactive_work-stealing}
+
+Before jumping into the core algorithm, it's insightful to touch upon the
+differences between parsimonious and proactive work-stealing. The consequences
+of this mainly affect the theoretical execution bound and on the number of
+\textit{\textbf{deviations}}, a metric used to analyze the theoretical
+performance of parallel executions. Informally, the difference between a
+parsimonious and proactive work-stealing scheduler boil down to what actions are
+taken upon encountering a blocked future: a parsimonious scheduler continues
+execution by popping nodes off its worker deque, while a proactive scheduler
+opts to immediately become a thief and attempts to steal work from elsewhere. 
+
+The classic work-stealing scheduler, as described in section
+\ref{subsection:work_stealing}, is parsimonious. Given the online scheduling
+problem where the computational DAG unfolds as execution proceeds, it is the
+responsibility of the scheduler to map work to available processing resources in
+a way that is efficient and still preserves the sequential dependencies of nodes
+in the DAG. Parsimonious scheduling achieves this by having each worker maintains its own deque of nodes
+that represent work to be executed, and having workers continuously pops nodes
+off and executing them. Upon completion of a node execution, the node may enable
+zero, one, or two child nodes. If zero nodes are enabled, it attempts to pop off
+its deque. If one node is enabled, it immediately executes the enabled node. If
+two nodes are enabled, it pushes one of the nodes to its end of the deque and
+executes the other node.
+
+Only when a worker runs out of work, signified by its deque being empty, does it
+attempt to steal work from another worker. It becomes a thief and randomly
+selects a victim deque, attempting to pop off a node from the top. Crucially, in
+the context of dealing with futures, a blocked future simply falls under the
+case of zero nodes, meaning a worker simply continues looking for work in its
+deque. The scheduler presented by Muller and Acar
+\cite{muller_latency-hiding_2016} is such an algorithm: upon encountering a
+blocked future, it sets the suspended future to the side but continues executing
+nodes from its local deque.
+
+In contrast, the defining characteristic of proactive work-stealing is what
+occurs instead upon encountering a blocked future: the deque is suspended and
+the worker immediately attempts to find work elsewhere, by becoming a thief. In
+ProWS-R, a worker marks its current deque (that it popped the future off of) as
+\textbf{\textit{suspended}}, randomly selects another worker to assign this
+suspended deque to, and then tries to steal work from other workers.
+Importantly, this means that although there are \(P\) workers, there can be more
+than \(P\) deques at a given time.
+
+Although it may initially appear counterintuitive to proactively steal, as it
+may seem to increase the amount of steal attempts and corresponding scheduler
+overhead, but 
+
+\subsection{Algorithm Overview}
+\label{subsection:the_algorithm_in_detail}
+
+Presented here is a description of the ProWS-R algorithm, the conceptual data
+structures used, and the adjustments made to accommodate the futures found in
+Rust. Again, this is largely based upon the work of Singer et. al, and their
+work should be consulted as reference.
+
+The principle idea behind ProWS-R is that there can be multiple deques in the
+system at any given time, and each worker thread owns an \textbf{\textit{active
+deque}} that they work off of. Whenever a worker thread encounters a blocked
+future, its current active deque is marked as suspended, the worker relinquishes
+ownership of the deque, and it attempts to find work elsewhere. The act of
+suspending deques allows for the latency of latency-incurring operations to be
+hidden while worker threads can fully utilize the available hardware resources
+to make progress on remaining available work. This differs from classic
+work-stealing, where such a scheduler without even the concept of
+latency-incurring operations would simply treat the operation as a regular
+computation, and be forced to block until the latency is incurred.
+
+When a blocked future reaches completion, a callback is executed that marks the
+deque as \textbf{\textit{Resumable}}, indicating that the previously suspended
+deque now has work available and is free to have its work stolen by worker
+threads. Worker threads have the ability to either steal just the top node off
+of other deques (including the active deques of other workers), or
+\textit{\textbf{mug}} entire deques that are marked as Resumable (but are not
+the active deques of other workers), and claim ownership of such deques. Mugging
+allows for the entire deque to be stolen in one go, as opposed to workers having
+to repeatedly steal nodes one-by-one off of such deques (since they're not the
+active deques of any other workers). 
+
+When a worker thread is executing a node and does not encounter a blocked
+future, the algorithm proceeds the same as classic work stealing.
+
+TODO: suspended deque required for proactive nature of algorithm, as well as
+the fact that Crossbeam deques worker side are not sync (it would not be
+possible for multiple wakers to concurrently push themselves back on deques
+while workers are working off them)
+
+\subsection{Data Structures}
+
+\subsubsection*{Deques}
+
+Like in classic work-stealing, nodes that represent work in the computational
+DAG are stored in deques. Deques are assumed to have support for concurrent
+operations. Each worker thread owns an active deque that they pop nodes off the
+bottom of and execute, like in classic work-stealing. If nodes spawn child
+nodes, these are pushed to the bottom of the deque. Worker threads, when
+stealing, pop nodes off the top of these deques. Worker threads also have the
+ability to steal entire deques at once (called mugging) that then become the new
+designated active deque for the respective worker thread. Each worker thread, in
+addition to having an active deque, manages a set of \textbf{\textit{stealable}}
+deques, called a \textbf{\textit{stealable set}}, that are not being actively
+worked on but contain ready nodes that can be stolen and executed. Deque
+operations are assumed to take constant amortized time.
+
+Deques support the following operations:
+
+\begin{itemize}
+    \item \texttt{popTop}: pop top node off of deque
+    \item \texttt{popBottom}: pop bottom node off of deque
+    \item \texttt{pushBottom}: push node to bottom of deque
+    \item \texttt{isEmpty}: return true if there are no nodes in deque
+    \item \texttt{inStealableSet}: return true if this deque is to be found in a
+        worker threads stealable set
+\end{itemize}
+
+During execution of the algorithm, deques are in one of the following states:
+
+\begin{itemize}
+    \item \textbf{Active}: It is the designated active deque of a given worker
+        thread (the worker thread pops, executes, and pushes nodes to this
+        deque).
+    \item \textbf{Suspended:} The bottom-most node that was last executed by a
+        worker thread encountered a blocking operation, and is now waiting out
+        the latency of the operation. This node is \textit{not} in the deque; it
+        will later be pushed onto the deque again by a callback when the
+        operation completes. The deque may still contain other ready nodes that
+        are available for worker threads to steal. TODO: make sure ``ready''
+        nodes is defined
+    \item \textbf{Resumable:} All nodes in the deque are ready, but is not being
+        actively worked on by a worker thread. These nodes can be stolen by
+        worker threads to execute.
+    \item \textbf{Muggable:} The entire deque can be mugged by a worker thread,
+        to become the threads new active deque.
+\end{itemize}
+
+\begin{figure}[ht]
+% https://q.uiver.app/?q=WzAsNCxbMCwwLCJcXHRleHR7QWN0aXZlfSJdLFs1LDMsIlxcdGV4dHtSZXN1bWFibGV9Il0sWzUsMCwiXFx0ZXh0e1N1c3BlbmRlZH0iXSxbMCwzLCJcXHRleHR7TXVnZ2FibGV9Il0sWzAsMiwiXFx0ZXh0e0VuY291bnRlciBibG9ja2VkIGZ1dHVyZX0iLDFdLFsyLDEsIlxcdGV4dHtDb21wbGV0aW9uIG9mIGJsb2NrZWQgZnV0dXJlfSIsMV0sWzEsMywiXFx0ZXh0e1N0b2xlbiBieSB0aGllZiBvbmNlIGJlZm9yZX0iLDFdLFszLDAsIlxcdGV4dHtNdWdnZWQgYnkgdGhpZWZ9IiwxXV0=
+\[\begin{tikzcd}
+	{\text{Active}} &&&&& {\text{Suspended}} \\
+	\\
+	\\
+	{\text{Muggable}} &&&&& {\text{Resumable}}
+	\arrow["{\text{Encounter blocked future}}"{description}, from=1-1, to=1-6]
+	\arrow["{\text{Completion of blocked future}}"{description}, from=1-6, to=4-6]
+	\arrow["{\text{Stolen by thief once before}}"{description}, from=4-6, to=4-1]
+	\arrow["{\text{Mugged by thief}}"{description}, from=4-1, to=1-1]
+\end{tikzcd}\]
+\caption{Deque state transitions}
+\label{figure:deque_state_transitions}
+\end{figure}
+
+Deque transitions are displayed in figure \ref{figure:deque_state_transitions}.
+Deques begin their lives in the Active state, when they are first created by a
+worker thread. A worker thread then works off the bottom of this deque, until it
+encounters a blocked future node, at which point the deque becomes Suspended.
+Upon completion of the previously blocked future node, a callback is executed
+that transitions the deque into the Resumable state. At this point, any worker
+thread is able to steal a single node off the top of the deque. After a worker
+thread has stolen a node off the top, the deque transitions into the Muggable
+state. In this state a worker thread can steal the entire deque at once (a
+mugging), and become the worker thread's new active deque.
+
+\subsubsection*{Stealable Sets}
+
+In order to keep track of stealable deques, each worker thread owns a
+\textbf{\textit{stealable set}}. This set contains deques that have ready nodes
+that are ready to be executed (i.e. available work for worker threads to
+perform). Like deques, stealable sets are assumed to support concurrent
+operation. During scheduler execution, thieves select a victim worker thread
+uniformly at random to steal from, and from within that victim's stealable set
+uniformly at random select a victim deque. Stealable set operations are assumed
+to take constant amortized time.
+
+Stealable sets support the following operations:
+
+\begin{itemize}
+    \item \texttt{add}: add a deque to the set
+    \item \texttt{remove}: remove a deque from the set
+    \item \texttt{chooseRandom}: return a random deque from the set (without
+        removing it)
+\end{itemize}
+
+\subsection{Scheduling Loop}
+
+The main scheduling loop is shown in algorithm \ref{alg:scheduling_loop}.
+Execution starts by setting the active deque of all worker threads to an empty
+deque, and pushing the root of the computation to one of the deques, after which
+the scheduling loop begins (line \ref{line:loop}).
+Without the extra logic to deal with futures (lines \ref{line:future_start} -
+\ref{line:future_end}), ProWS-R behaves the same as classic work-stealing.
+
+Worker threads work off the bottom of their active deques. When a node is popped
+from the bottom, it is first executed and then its children (if any) are pushed
+to the bottom of the deque. Special care is taken for when a node that was just
+executed is found to have encountered a blocked future (line
+\ref{line:blocked_future}): the worker thread's active deque is immediately
+suspended and a callback is installed on the future that will reschedule it for
+execution again once it's latency incurring operation completes. Deque
+suspension for the active deque (line \ref{line:deque_suspension}) involves
+changing its state to Suspended, removing it from the worker thread's stealable
+set, and if it is not empty adding it to the stealable set of another randomly
+selected worker thread. If the deque is empty, it will not be found in any
+stealable set, so that worker threads can not fruitlessly try to steal from it. 
+
+The callback (line \ref{line:callback}) that is installed on the blocked future
+(line \ref{line:install_callback}) is the critical aspect for enabling
+latency-hiding. In order to try and keep worker threads busy with work as much
+as possible so that progress is being made on the computation with full hardware
+resource utilization, it's undesirable for worker threads to perform any
+operations that are not directly related to executing work nodes. As such, the
+callback is responsible for executing when completion of a blocked future is
+detected, and rescheduling the future node for execution by a worker thread.
+More concrete reasoning and explanation of how this occurs in practice is given
+in section \ref{section:i/o_dispatch_and_processing}.
+
+Due to the way Rust futures implement their completion signaling mechanism using
+wakers (introduced in section \ref{section:futures}), it is possible for
+multiple wakers to wake up the same future. This can happen, for example, when
+two futures are manually polled immediately after one another using the same
+waker, like when using the \texttt{join!} macro \footnote{The \texttt{join!}
+    macro can be used to create a future that concurrently executes two or more
+    futures (note: not in parallel). It does this by polling the two or more
+    futures passed to it in sequential order, passing and cloning its waker
+    every time. This means as soon as at least one of the futures is ready to
+    make progress the \texttt{join!} future is awoken and can be rescheduled for
+    execution. These multiple futures can all trigger the waker clones that wake
+    up the same future, hence the need for ProWS-R to support repeatedly polled
+futures.}. Because of this, it is vital that ProWS-R supports \textit{repeatedly
+polled futures}. Fortunately, supporting this is trivial: all that is required
+is a check (line \ref{line:sus_check}) to see if the deque the future was
+suspended with is already unsuspended, and if so, the callback does not perform
+any actions. If, however, the deque is still suspended, the callback pushes
+the future back to the bottom of the deque, transitions it to Resumable, and
+adds it to a random worker thread's stealable set if the deque is not already in
+one. Doing this the callback makes the now-resumable future ready to be executed
+by a worker thread again.
+
+When a worker thread cannot find work to execute in its active deque (line
+\ref{line:no_work}), it must become a thief and steal from elsewhere. The steal
+procedure is outlined in algorithm \ref{alg:steal}. First, a random victim deque
+from a random worker thread's stealable set is chosen (line
+\ref{line:choose_random}). Recall that stealable deques can either have nodes
+stolen off the top of them, or be mugged in their entirety. Given the victim
+deque, if it's in the Muggable state the thieving thread mugs the entire
+deque and sets it to be its new active deque. Otherwise, the thieving thread
+attempts to pop a node from the top of the victim deque. If after popping a node
+the victim deque is empty, it is removed from the victim worker thread's
+stealable set so that other worker threads cannot futilely attempt to steal from
+it, and possibly even freed if not in the Suspended state (a Suspended deque can
+be empty but still be awaiting a callback to push a resumable future back on to
+it, so should not be freed). If the victim deque is Resumable it is then marked
+as Muggable, and possibly a new deque is created for the thieving worker thread
+if it has none (which is the case when a blocked future is encountered on line
+\ref{line:blocked_future}). If a node could not be stolen, the steal procedure
+is repeated.
+
+The calls to \texttt{rebalanceStealables} on lines \ref{line:rebalance_1} and
+\ref{line:rebalance_2} are to balance the load of stealable deques among the
+worker thread stealable sets. This is done so that the chance of selecting a
+stealable deque given a victim worker thread stays uniform. This is called when
+a deque has been removed from a worker thread \(v\)'s stealable set- it randomly
+chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is done,
+otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if \(v^\prime\)
+has one.
+
+\begin{algorithm}
+\caption{Main Scheduling Loop ($w$ is the currently executing worker thread)}\label{alg:scheduling_loop}
+\begin{algorithmic}[1]
+    \Function{schedulingLoop}{}
+        \While{computation is not done} \label{line:loop}
+            \State $node \gets \text{findNode()}$
+            \State $left, right \gets \text{execute(}node\text{)}$
+            \If{$left \neq \text{null}$}
+                \State $w \text{.active.pushBottom(}left\text{)}$
+            \EndIf
+            \If{$right \neq \text{null}$}
+                \State $w \text{.active.pushBottom(}right\text{)}$
+            \EndIf
+            \If{$node \text{ encountered blocked future } f$}
+            \label{line:future_start} \label{line:blocked_future}
+                \State $deq \gets w \text{.active}$
+                \State $w \text{.active} \gets \text{null}$
+                \State $\text{suspendDeque(}deq\text{)}$
+                \State $f\text{.installCallBack(} deq \text{)}$
+                    \label{line:install_callback}
+            \EndIf \label{line:future_end}
+        \EndWhile
+    \EndFunction
+    \Function{suspendDeque}{$deq$} \label{line:deque_suspension}
+        \State $deq\text{.state} \gets \textbf{SUSPENDED}$
+        \State $ w \text{.stealableSet.remove(} deq \text{)}$
+        \If{$! deq \text{.isEmpty()}$}
+            \State $ \text{chooseRandomVictim().stealableSet.add(} deq \text{)}$
+        \EndIf
+    \EndFunction
+    \Function{findNode}{}
+        \State $node \gets \text{null}$
+        \If{$w \text{.active} \neq \text{null}$}
+            \State $node \gets w \text{.active.popBottom()}$
+        \EndIf
+        \If{$node = \text{null}$} \label{line:no_work}
+            \State $node \gets \text{steal()}$
+        \EndIf
+        \State $\textbf{return } node$
+    \EndFunction
+    \algstore{loop}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Callback Procedure (called upon completion of the blocked future $f$)}
+\begin{algorithmic}[1]
+    \algrestore{loop}
+    \Function{callBack}{$suspendedDeq$} \label{line:callback}
+        \If{$suspendedDeq \text{.state} \neq \textbf{SUSPENDED} $}
+            \label{line:sus_check}
+            \State \textbf{return}
+        \EndIf
+        \State $suspendedDeq \text{.pushBottom(} f \text{)}$ \Comment $f$ is a node
+            that can be executed
+        \State $suspendedDeq\text{.state} \gets \textbf{RESUMABLE}$
+        \If{$! suspendedDeq \text{.inStealableSet()}$}
+            \State $\text{chooseRandomVictim().stealableSet.add(} suspendedDeq
+                \text{)}$
+        \EndIf
+    \EndFunction
+    \algstore{callback}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Steal Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
+\begin{algorithmic}[1]
+    \algrestore{callback}
+    \Function{steal}{}
+        \While{$true$}
+            \State $victim \gets \text{chooseRandomVictim()} $
+            \State $ victimDeque \gets victim \text{.stealableSet.chooseRandom()} $
+                \label{line:choose_random}
+            \If{$victimDeque \text{.state} = \textbf{MUGGABLE}$}
+                \State $ \textbf{return } \text{setToActive(} victim, victimDeque \text{)}$ 
+            \EndIf
+            \State $ node \gets victimDeque \text{.popTop()} $
+            \If{$ victimDeque \text{.isEmpty()} $}
+                \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
+                \State $ \text{rebalanceStealables(} victim \text{)} $
+                    \label{line:rebalance_1}
+                \If{$ victimDeque \text{.state} \neq \textbf{SUSPENDED} $}
+                    \State $ \text{freeDeque(} victimDeque \text{)} $
+                \EndIf
+            \ElsIf{$victimDeque \text{.state} = \textbf{RESUMABLE} $}
+                \State $victimDeque\text{.state} \gets \textbf{MUGGABLE}$
+            \EndIf
+            \If{$node != \text{null}$}
+                \If{$ w \text{.active} = \text{null} $}
+                    \State $w \text{.active} \gets \text{createNewDeque()}$
+                \EndIf
+                \State $ \textbf{return } node $
+            \EndIf
+        \EndWhile
+    \EndFunction
+    \Function{setToActive}{$victim, victimDeque$}
+        \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
+        \State $ w \text{.stealableSet.add(} victimDeque \text{)} $
+        \State $ victimDeque \text{.state} = \textbf{ACTIVE} $
+        \State $ \text{rebalanceStealables(} victim \text{)} $
+            \label{line:rebalance_2}
+        \If{$ w \text{.active.isEmpty()} $}
+            \State $ \text{freeDeque(} w \text{.active)} $
+        \EndIf
+        \State $ w \text{.active} \gets victimDeque $
+        \State $ \textbf{return } w \text{.active.popBottom()} $
+    \EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\section{Required Runtime Support for Latency-Hiding}
+\label{section:required_runtime_support_for_latency_hiding}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Implementation: Time is an Illusion}
+
+\section{Scheduler Overview}
+
+\section{Jobs: Representing Work}
+
+\section{I/O Dispatch and Processing}
+\label{section:i/o_dispatch_and_processing}
+
+\section{Pitfalls: Concurrent Programming is Hard}
+
+\section{Implementation Challenges}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Evaluation: To Superlinear and Beyond (Not Really... Just Superlinear)}
+
+\section{Impact of Injecting Latency}
+
+\section{Compute vs I/O Bound Workloads}
+
+\section{Limitations}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Summary}
+
+\section{Lessons Learned}
+
+\section{Future Work}
 
 \section{Final Reminder}
 
