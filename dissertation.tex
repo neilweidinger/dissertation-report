@@ -133,7 +133,7 @@ concurrent control flow \cite{niebler_structured_2020, smith_notes_nodate}.
 Under such workloads, large performance gains can be made from having either the
 latency-incurring operation cooperatively yield or the scheduler forcibly
 preempting the operation, and allowing another task that could be performing
-useful work to run instead. This allows the latency incurring operation to wait
+useful work to run instead. This allows the latency-incurring operation to wait
 out its latency in the background even while all hardware resources are being
 fully utilized on other tasks, thus \textbf{\textit{hiding}} the latency. Singer
 et. al \cite{singer_proactive_2019}, introduce a latency-hiding work-stealing
@@ -399,7 +399,7 @@ single processor.
 
 \begin{itemize}
     \item Fibonacci example for compute bound
-    \item Include latency incurring example here in BG chapter, or later?
+    \item Include latency-incurring example here in BG chapter, or later?
 \end{itemize}
 
 \subsection{DAG model of Parallel Computations}
@@ -597,13 +597,15 @@ considerations taken to support the Rust implementation of futures.
 
 Before jumping into the core algorithm, it's insightful to touch upon the
 differences between parsimonious and proactive work-stealing. The consequences
-of this mainly affect the theoretical execution bound and on the number of
-\textit{\textbf{deviations}}, a metric used to analyze the theoretical
-performance of parallel executions. Informally, the difference between a
-parsimonious and proactive work-stealing scheduler boil down to what actions are
-taken upon encountering a blocked future: a parsimonious scheduler continues
-execution by popping nodes off its worker deque, while a proactive scheduler
-opts to immediately become a thief and attempts to steal work from elsewhere. 
+of this mainly affect the theoretical execution bound (section
+\ref{subsection:performance_bounds}) and on the number of
+\textit{\textbf{deviations}} \cite{spoonhower_beyond_2009}, a metric used to
+analyze the theoretical performance of parallel executions. Informally, the
+difference between a parsimonious and proactive work-stealing scheduler boil
+down to what actions are taken upon encountering a blocked future: a
+parsimonious scheduler continues execution by popping nodes off its worker
+deque, while a proactive scheduler opts to immediately become a thief and
+attempts to steal work from elsewhere. 
 
 The classic work-stealing scheduler, as described in section
 \ref{subsection:work_stealing}, is parsimonious. Given the online scheduling
@@ -635,11 +637,11 @@ ProWS-R, a worker marks its current deque (that it popped the future off of) as
 \textbf{\textit{suspended}}, randomly selects another worker to assign this
 suspended deque to, and then tries to steal work from other workers.
 Importantly, this means that although there are \(P\) workers, there can be more
-than \(P\) deques at a given time.
-
-Although it may initially appear counterintuitive to proactively steal, as it
-may seem to increase the amount of steal attempts and corresponding scheduler
-overhead, but  TOOD: expand on benefits of proactive scheduling
+than \(P\) deques at a given time. Although it may initially appear
+counterintuitive to proactively steal, as it may seem to increase the amount of
+steal attempts and corresponding scheduler overhead, but doing so provides a
+better bound on execution time given latency-incurring operations (section
+\ref{subsection:performance_bounds}).
 
 \subsection{Algorithm Overview}
 \label{subsection:the_algorithm_in_detail}
@@ -659,7 +661,9 @@ hidden while worker threads can fully utilize the available hardware resources
 to make progress on remaining available work. This differs from classic
 work-stealing, where such a scheduler without even the concept of
 latency-incurring operations would simply treat the operation as a regular
-computation, and be forced to block until the latency is incurred.
+computation, and be forced to block until the latency is incurred. When a worker
+thread is executing a node and does not encounter a blocked future, the
+algorithm proceeds the same as classic work stealing.
 
 When a blocked future reaches completion, a callback is executed that marks the
 deque as \textbf{\textit{Resumable}}, indicating that the previously suspended
@@ -671,14 +675,6 @@ the active deques of other workers), and claim ownership of such deques. Mugging
 allows for the entire deque to be stolen in one go, as opposed to workers having
 to repeatedly steal nodes one-by-one off of such deques (since they're not the
 active deques of any other workers). 
-
-When a worker thread is executing a node and does not encounter a blocked
-future, the algorithm proceeds the same as classic work stealing.
-
-TODO: suspended deque required for proactive nature of algorithm, as well as
-the fact that Crossbeam deques worker side are not sync (it would not be
-possible for multiple wakers to concurrently push themselves back on deques
-while workers are working off them)
 
 \subsection{Data Structures}
 
@@ -788,7 +784,7 @@ to the bottom of the deque. Special care is taken for when a node that was just
 executed is found to have encountered a blocked future (line
 \ref{line:blocked_future}): the worker thread's active deque is immediately
 suspended and a callback is installed on the future that will reschedule it for
-execution again once it's latency incurring operation completes. Deque
+execution again once it's latency-incurring operation completes. Deque
 suspension for the active deque (line \ref{line:deque_suspension}) involves
 changing its state to Suspended, removing it from the worker thread's stealable
 set, and if it is not empty, adding it to the stealable set of another randomly
@@ -978,6 +974,30 @@ done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{Performance Bounds}
+\label{subsection:performance_bounds}
+
+As ProWS-R is effectively equivalent to ProWS in terms of complexity (ProWS-R is
+actually a slightly stripped down version of ProWS, with additional simple
+constant time operations to support Rust futures), it inherits the performance
+bounds of ProWS \cite{singer_proactive_2019, singer_scheduling_2019}. Singer et.
+al show the execution time bound of ProWS is \(O(T_1 / P + T_\infty \lg P)\).
+This means the bound is \textit{independent} of the number of latency-incurring operations in
+the computation, thus hiding latency. Compared to the classic work stealing
+bound of \(O(T_1 / P + T_\infty)\) which provides linear speedup when \(T_1 /
+T_\infty = \Omega(P)\), ProWS, and by extension ProWS-R, provide linear speedup
+when \(T_1 / T_\infty = \Omega(P \lg P)\).
+
+Briefly, the analysis of ProWS achieves a bound independent of the number of
+latency-incurring operations by exploiting the fact that stealable deques must
+be stolen from once while in the Resumable state before transitioning to the
+Muggable state. By stealing once before mugging the entire deque, this ensures
+that for each mugging there is a corresponding steal to amortize against,
+allowing the number of steals to be bounded. Since a work-stealing scheduler is
+either working or stealing, the total running time is \((T_1 + X) / P\), where
+\(X\) bounds the number of steal attempts. Armed with a bound on the number of
+steals, the final bound on execution time can be found.
+
 \section{Required Runtime Support for Latency-Hiding}
 \label{section:required_runtime_support_for_latency_hiding}
 
@@ -989,15 +1009,17 @@ involved with Rust futures.}. To truly support latency-hiding, additional
 runtime special considerations must be accounted for to support the core
 scheduling algorithm. Scheduling futures is one thing, but actually hiding the
 latency in an efficient manner is another. Essentially, the runtime support
-needs to answer the question: how can latency incurring operations be performed
+needs to answer the question: how can latency-incurring operations be performed
 asynchronously, while worker threads can still make progress on the primary
 computation?
+
+\subsection{The I/O Thread}
 
 The crux of the problem is that given a fixed number of \(P\) worker threads, it
 is undesirable for any of the \(P\) worker threads to be doing anything except
 for executing nodes. Anything that a worker thread does outside of this only
 contributes to scheduler overhead. To avoid placing the burden of processing
-latency incurring operations on a worker thread, the ProWS-R runtime uses an
+latency-incurring operations on a worker thread, the ProWS-R runtime uses an
 additional thread, named the I/O thread, dedicated to solely this task. This
 relieves the worker threads of having to sacrifice time that could otherwise
 have been spent executing work.
@@ -1044,6 +1066,8 @@ nothing is ready. An additional concern would be how often to perform the
 polling: too often and processor usage would be excessive; not often enough and
 resumable futures might not be made available quickly enough.
 
+\subsection{Event Queues}
+
 To avoid these issues, this functionality is instead achieved by relying on the
 underlying operating system event queue: epoll on Linux, kqueue on BSD systems,
 and IOCP on Windows. The I/O thread has an instance of such an event queue. When
@@ -1085,7 +1109,7 @@ needs its corresponding callback executed. At all other times it is asleep, and
 the available processing resources can instead be fully utilized by the worker
 threads to execute work. In between the time a worker thread encounters a
 blocked future and the future becomes resumable, it performs useful work, thus
-hiding the latency incurring operation of the blocked future.
+hiding the latency-incurring operation of the blocked future.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
