@@ -80,14 +80,15 @@ non-deterministic errors like race conditions and deadlocking.
 
 This backdrop of the need to embrace parallelism has spurred the advancement of
 significant research and development in programming languages and paradigms to
-help assist writing such programs. One such paradigm is
-\textit{\textbf{fork-join}} parallelism \cite{conway_multiprocessor_1963,
-nyman_notes_2016}, where programs can begin parallel execution at ``fork''
-points and ``join'' to merge back and resume sequential execution again. This
-alleviates the programmer from having to manually managing parallel computation:
-one needs to only express the \textbf{\textit{logical}} opportunities for
-\textit{\textbf{possible}} parallelism, decoupling the programmer from the
-underlying runtime that takes care of handling scheduling and execution.
+help assist writing such programs \cite{muller_latency-hiding_2016,
+zakian_concurrent_2016}. One such paradigm is \textit{\textbf{fork-join}}
+parallelism \cite{conway_multiprocessor_1963, nyman_notes_2016}, where programs
+can begin parallel execution at ``fork'' points and ``join'' to merge back and
+resume sequential execution again. This alleviates the programmer from having to
+manually managing parallel computation: one needs to only express the
+\textbf{\textit{logical}} opportunities for \textit{\textbf{possible}}
+parallelism, decoupling the programmer from the underlying runtime that takes
+care of handling scheduling and execution.
 
 Such an underlying runtime to manage parallelism while the program executes must
 feature a \textit{\textbf{scheduler}} to determine an efficient parallel
@@ -117,7 +118,8 @@ degrees of operations that do incur latency, commonly in the form of I/O:
 waiting for user input, communicating to a remote client or server, dealing with
 hardware peripherals, etc. In such environments, classic work-stealing
 schedulers can suffer from large performance implications, depending on how much
-latency is incurred while executing the workload.
+latency is incurred while executing the workload
+\cite{muller_latency-hiding_2016, singer_scheduling_2019, zakian_concurrent_2016}.
 
 Classic work-stealing schedulers have no notion of latency-incurring operations
 nor incorporate them into the design of the scheduling algorithm. A worker
@@ -1129,6 +1131,8 @@ hiding the latency-incurring operation of the blocked future.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Evaluation: To Superlinear and Beyond (Not Really... Just Superlinear)}
+
+\section{Experimental Setup}
 
 \section{Impact of Injecting Latency}
 

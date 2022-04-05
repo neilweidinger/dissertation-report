@@ -557,3 +557,19 @@
 	file = {join in futures\:\:future - Rust:/Users/neilweidinger/Zotero/storage/8LSYPSDN/fn.join.html:text/html},
 }
 
+@inproceedings{zakian_concurrent_2016,
+	address = {Cham},
+	title = {Concurrent {Cilk}: {Lazy} {Promotion} from {Tasks} to {Threads} in {C}/{C}++},
+	isbn = {978-3-319-29778-1},
+	shorttitle = {Concurrent {Cilk}},
+	doi = {10.1007/978-3-319-29778-1_5},
+	abstract = {Library and language support for scheduling non-blocking tasks has greatly improved, as have lightweight (user) threading packages. However, there is a significant gap between the two developments. In previous work—and in today’s software packages—lightweight thread creation incurs much larger overheads than tasking libraries, even on tasks that end up never blocking. This limitation can be removed. To that end, we describe an extension to the Intel Cilk Plus runtime system, Concurrent Cilk, where tasks are lazily promoted to threads. Concurrent Cilk removes the overhead of thread creation on threads which end up calling no blocking operations, and is the first system to do so for C/C++ with legacy support (standard calling conventions and stack representations). We demonstrate that Concurrent Cilk adds negligible overhead to existing Cilk programs, while its promoted threads remain more efficient than OS threads in terms of context-switch overhead and blocking communication. Further, it enables development of blocking data structures that create non-fork-join dependence graphs—which can expose more parallelism, and better supports data-driven computations waiting on results from remote devices.},
+	language = {en},
+	booktitle = {Languages and {Compilers} for {Parallel} {Computing}},
+	publisher = {Springer International Publishing},
+	author = {Zakian, Christopher S. and Zakian, Timothy A. K. and Kulkarni, Abhishek and Chamith, Buddhika and Newton, Ryan R.},
+	editor = {Shen, Xipeng and Mueller, Frank and Tuck, James},
+	year = {2016},
+	pages = {73--90},
+	file = {Springer Full Text PDF:/Users/neilweidinger/Zotero/storage/WXRI6S9S/Zakian et al. - 2016 - Concurrent Cilk Lazy Promotion from Tasks to Thre.pdf:application/pdf},
+}
