@@ -94,7 +94,7 @@ feature a \textit{\textbf{scheduler}} to determine an efficient parallel
 execution. Runtime implementations such as Cilk
 \cite{frigo_implementation_1998}, the Java Fork/Join framework
 \cite{lea_java_2000}, and TBB \cite{noauthor_advanced_nodate}, commonly employ
-\textbf{\textit{work-stealing}} \cite{blumofe_cilk_1995}, a class of schedulers designed to deal with the
+\textbf{\textit{work-stealing}} \cite{blumofe_cilk_1995}: a class of schedulers designed to deal with the
 problem of dynamically multithreaded computations on statically multithreaded
 hardware. In brief, work-stealing schedulers take care
 of scheduling and the accompanying issue of load balancing available work by
@@ -220,19 +220,19 @@ Describe and outline background chapter.
 \section{Modern Computer Architecture}
 
 Ever since the advent of general-purpose microprocessor based computer systems,
-transistor density has been doubling roughly every two years. Famously known as
-Moore's law, for the first 30 years of the existence of the microprocessor the
-consequences of this graced the computing world with effortless biennial
-performance increases.  Bestowed with this exponential growth of transistor
-density, chip designers could drastically increase core frequencies with each
-generation, and with ever increasing transistor budgets afford to design more
-complex architectural features like instruction pipelining, superscalar
-execution, and branch prediction. Without touching a line of code, software
-developers could expect programs to automatically double in performance every
-two years \cite{hennessy_new_2019}.
+transistor density has been and continues to double roughly every two years.
+Famously known as Moore's law, for the first 30 years of the existence of the
+microprocessor the consequences of this graced the computing world with
+effortless biennial performance increases. Bestowed with this exponential growth
+of transistor density, chip designers could drastically increase core
+frequencies with each generation, and with ever increasing transistor budgets
+afford to design more complex architectural features like instruction
+pipelining, superscalar execution, and branch prediction. Without touching a
+line of code, software developers could expect programs to automatically double
+in performance every two years \cite{hennessy_new_2019}.
 
 Accompanying Moore's law was another, related, effect: Dennard scaling. While
-Moore's law provided increased transistor counts, Dennard scaling allowed for
+Moore's law provides increased transistor counts, Dennard scaling allowed for
 this transistor doubling while ensuring power density was constant. The scaling
 law states roughly that as transistors get smaller, power density stays
 constant, meaning that power consumption with double the transistors stays the
@@ -261,7 +261,7 @@ architectural features in order to extract sequential performance on single core
 processors, the extra transistors are largely used to build more cores on a
 single processor. With diminishing returns on effort spent increasing single
 core performance, chip designers look to add multiple cores to be able to
-execute more instructions in parallel.
+execute more instructions in parallel \cite{patterson_trouble_2010}.
 
 CPU performance can be described using the following equation
 \cite{patterson_computer_2021}, where performance is measured in terms of
@@ -293,7 +293,8 @@ As of 2021, it is difficult to find a processor that is not a multicore
 processor. The performance gains provided by having multiple cores have shown to
 be so profound that even the lowest end chips feature multiple cores. The
 Raspberry Pi Zero 2, a \pounds13.50 board in the Raspberry Pi family of low cost
-single-board computers, features a 64-bit quad-core Arm Cortex-A53 CPU.
+single-board computers, features a 64-bit quad-core Arm Cortex-A53 CPU
+\cite{ltd_raspberry_nodate}.
 
 Initially, multicore processors may seem like a silver bullet to the question of
 what to do when faced with the power wall: for more performance, simply scale
@@ -326,8 +327,7 @@ patterson_trouble_2010}.
         \item Memory ordering
         \item Race conditions
         \item Deadlocks/livelocks
-        \item Lock-free programming
-        \item Atomic operations
+        \item Lock-free programming and atomic operations
         \item Workload partitioning
         \item Workload balancing
         \item Scheduling
@@ -339,7 +339,8 @@ with the intention of being executed in serial on a single core processor. Once
 CPU hardware started featuring multiple cores, programs did not magically
 rewrite themselves to take advantage of this increased firepower. Instead,
 developers had to manually identify the existing parallelism in their programs
-and refactor them to run as multiple computational threads.
+and refactor them to run as multiple computational threads
+\cite{patterson_trouble_2010}.
 
 Threads are an abstraction of units of scheduling and execution: the same
 program can have multiple threads of execution running concurrently. A
@@ -553,6 +554,7 @@ single processor.
 TODO: put general stuff about futures concept here
 
 \subsection{Futures in Rust}
+\label{subsection:futures_in_rust}
 
 TODO: describe how futures in Rust work here (e.g. state machine, async fns,
 executors, pinning, etc.)
@@ -571,8 +573,8 @@ computations using DAG model
 This chapter describes the high-level overview of the ProWS-R latency-hiding
 work stealing algorithm, without diving into the details of the implementation.
 Section \ref{section:overview_of_the_prows_algorithm} provides an overview of
-the core scheduling algorithm, and the considerations that allow for nested and
-repeatedly polled futures. Section
+the core scheduling algorithm, and the considerations that allow for repeatedly
+polled futures found in Rust. Section
 \ref{section:required_runtime_support_for_latency_hiding} describes the
 additional runtime support necessary to provide the latency-hiding capabilities
 of the scheduler.
@@ -608,23 +610,23 @@ The classic work-stealing scheduler, as described in section
 problem where the computational DAG unfolds as execution proceeds, it is the
 responsibility of the scheduler to map work to available processing resources in
 a way that is efficient and still preserves the sequential dependencies of nodes
-in the DAG. Parsimonious scheduling achieves this by having each worker maintains its own deque of nodes
-that represent work to be executed, and having workers continuously pops nodes
-off and executing them. Upon completion of a node execution, the node may enable
-zero, one, or two child nodes. If zero nodes are enabled, it attempts to pop off
-its deque. If one node is enabled, it immediately executes the enabled node. If
-two nodes are enabled, it pushes one of the nodes to its end of the deque and
-executes the other node.
+in the DAG. Parsimonious scheduling achieves this by having each worker thread
+maintain its own deque of nodes that represent work to be executed, and having
+workers continuously pops nodes off and executing them. Upon completion of a
+node execution, the node may enable zero, one, or two child nodes. If zero nodes
+are enabled, it attempts to pop off its deque. If one node is enabled, it
+immediately executes the enabled node. If two nodes are enabled, it pushes one
+of the nodes to its end of the deque and executes the other.
 
 Only when a worker runs out of work, signified by its deque being empty, does it
 attempt to steal work from another worker. It becomes a thief and randomly
 selects a victim deque, attempting to pop off a node from the top. Crucially, in
 the context of dealing with futures, a blocked future simply falls under the
-case of zero nodes, meaning a worker simply continues looking for work in its
+case of zero nodes, meaning a worker continues looking for work in its local
 deque. The scheduler presented by Muller and Acar
 \cite{muller_latency-hiding_2016} is such an algorithm: upon encountering a
 blocked future, it sets the suspended future to the side but continues executing
-nodes from its local deque.
+nodes from its deque.
 
 In contrast, the defining characteristic of proactive work-stealing is what
 occurs instead upon encountering a blocked future: the deque is suspended and
@@ -637,7 +639,7 @@ than \(P\) deques at a given time.
 
 Although it may initially appear counterintuitive to proactively steal, as it
 may seem to increase the amount of steal attempts and corresponding scheduler
-overhead, but 
+overhead, but  TOOD: expand on benefits of proactive scheduling
 
 \subsection{Algorithm Overview}
 \label{subsection:the_algorithm_in_detail}
@@ -703,15 +705,14 @@ Deques support the following operations:
     \item \texttt{pushBottom}: push node to bottom of deque
     \item \texttt{isEmpty}: return true if there are no nodes in deque
     \item \texttt{inStealableSet}: return true if this deque is to be found in a
-        worker threads stealable set
+        worker thread's stealable set
 \end{itemize}
 
 During execution of the algorithm, deques are in one of the following states:
 
 \begin{itemize}
     \item \textbf{Active}: It is the designated active deque of a given worker
-        thread (the worker thread pops, executes, and pushes nodes to this
-        deque).
+        thread (the worker thread treats this as its local deque).
     \item \textbf{Suspended:} The bottom-most node that was last executed by a
         worker thread encountered a blocking operation, and is now waiting out
         the latency of the operation. This node is \textit{not} in the deque; it
@@ -720,8 +721,8 @@ During execution of the algorithm, deques are in one of the following states:
         are available for worker threads to steal. TODO: make sure ``ready''
         nodes is defined
     \item \textbf{Resumable:} All nodes in the deque are ready, but is not being
-        actively worked on by a worker thread. These nodes can be stolen by
-        worker threads to execute.
+        actively worked on by a worker thread. These nodes can be stolen off the
+        top of the deque by worker threads and then executed.
     \item \textbf{Muggable:} The entire deque can be mugged by a worker thread,
         to become the threads new active deque.
 \end{itemize}
@@ -759,10 +760,9 @@ In order to keep track of stealable deques, each worker thread owns a
 \textbf{\textit{stealable set}}. This set contains deques that have ready nodes
 that are ready to be executed (i.e. available work for worker threads to
 perform). Like deques, stealable sets are assumed to support concurrent
-operation. During scheduler execution, thieves select a victim worker thread
-uniformly at random to steal from, and from within that victim's stealable set
-uniformly at random select a victim deque. Stealable set operations are assumed
-to take constant amortized time.
+operation and take constant amortized time. During scheduler execution, thieves
+select a victim worker thread uniformly at random to steal from, and from within
+that victim's stealable set, uniformly at random select a victim deque.
 
 Stealable sets support the following operations:
 
@@ -791,42 +791,51 @@ suspended and a callback is installed on the future that will reschedule it for
 execution again once it's latency incurring operation completes. Deque
 suspension for the active deque (line \ref{line:deque_suspension}) involves
 changing its state to Suspended, removing it from the worker thread's stealable
-set, and if it is not empty adding it to the stealable set of another randomly
+set, and if it is not empty, adding it to the stealable set of another randomly
 selected worker thread. If the deque is empty, it will not be found in any
-stealable set, so that worker threads can not fruitlessly try to steal from it. 
+stealable set, so that worker threads can not try to fruitlessly steal from it. 
 
 The callback (line \ref{line:callback}) that is installed on the blocked future
 (line \ref{line:install_callback}) is the critical aspect for enabling
 latency-hiding. In order to try and keep worker threads busy with work as much
 as possible so that progress is being made on the computation with full hardware
 resource utilization, it's undesirable for worker threads to perform any
-operations that are not directly related to executing work nodes. As such, the
-callback is responsible for executing when completion of a blocked future is
-detected, and rescheduling the future node for execution by a worker thread.
-More concrete reasoning and explanation of how this occurs in practice is given
-in section \ref{section:i/o_dispatch_and_processing}.
+operations that are not directly related to executing work nodes (contributes to
+scheduler overhead). As such, the callback is responsible for executing when
+completion of a blocked future is detected, and rescheduling the future node for
+execution by a worker thread. More concrete reasoning and explanation of how
+this occurs in practice is given in section
+\ref{section:i/o_dispatch_and_processing}.
 
 Due to the way Rust futures implement their completion signaling mechanism using
-wakers (introduced in section \ref{section:futures}), it is possible for
-multiple wakers to wake up the same future. This can happen, for example, when
-two futures are manually polled immediately after one another using the same
-waker, like when using the \texttt{join!} macro \footnote{The \texttt{join!}
-    macro can be used to create a future that concurrently executes two or more
+wakers (introduced in section \ref{subsection:futures_in_rust}), it is possible
+for multiple wakers to wake up the same future. This is unlike the futures
+supported by ProWS, and it is vital that ProWS-R take specific care to handle
+\textit{repeatedly polled futures}. Multiple polled futures can happen, for
+example, when two futures are manually polled immediately after one another
+using the same waker, like when using the \texttt{join} function \footnote{The
+    \texttt{join} function in the Rust futures crate \cite{noauthor_join_nodate}
+    can be used to create a future that concurrently executes two or more
     futures (note: not in parallel). It does this by polling the two or more
     futures passed to it in sequential order, passing and cloning its waker
     every time. This means as soon as at least one of the futures is ready to
-    make progress the \texttt{join!} future is awoken and can be rescheduled for
+    make progress the \texttt{join} future is awoken and can be rescheduled for
     execution. These multiple futures can all trigger the waker clones that wake
     up the same future, hence the need for ProWS-R to support repeatedly polled
-futures.}. Because of this, it is vital that ProWS-R supports \textit{repeatedly
-polled futures}. Fortunately, supporting this is trivial: all that is required
+    futures.}. Fortunately, supporting this is trivial \footnote{While trivial,
+    early versions of the implementation incorrectly assumed that when a
+    callback is executed, the suspended deque associated with that callback will
+    always be Suspended. This led to all sorts of extremely subtle and difficult
+    to diagnose issues where scheduler state eventually became corrupted, since
+nodes would be wrongly pushed to deques more than once, possibly leading to the
+program never terminating or other consequent problems.}: all that is required
 is a check (line \ref{line:sus_check}) to see if the deque the future was
 suspended with is already unsuspended, and if so, the callback does not perform
-any actions. If, however, the deque is still suspended, the callback pushes
-the future back to the bottom of the deque, transitions it to Resumable, and
-adds it to a random worker thread's stealable set if the deque is not already in
-one. Doing this the callback makes the now-resumable future ready to be executed
-by a worker thread again.
+any actions. If, however, the deque is still suspended, the callback pushes the
+future back to the bottom of the deque, transitions it to Resumable, and adds it
+to a random worker thread's stealable set if the deque is not already in one.
+Doing this the callback makes the now-resumable future ready to be executed by a
+worker thread again.
 
 When a worker thread cannot find work to execute in its active deque (line
 \ref{line:no_work}), it must become a thief and steal from elsewhere. The steal
@@ -834,7 +843,7 @@ procedure is outlined in algorithm \ref{alg:steal}. First, a random victim deque
 from a random worker thread's stealable set is chosen (line
 \ref{line:choose_random}). Recall that stealable deques can either have nodes
 stolen off the top of them, or be mugged in their entirety. Given the victim
-deque, if it's in the Muggable state the thieving thread mugs the entire
+deque, if it's in the Muggable state, the thieving thread mugs the entire
 deque and sets it to be its new active deque. Otherwise, the thieving thread
 attempts to pop a node from the top of the victim deque. If after popping a node
 the victim deque is empty, it is removed from the victim worker thread's
@@ -842,22 +851,23 @@ stealable set so that other worker threads cannot futilely attempt to steal from
 it, and possibly even freed if not in the Suspended state (a Suspended deque can
 be empty but still be awaiting a callback to push a resumable future back on to
 it, so should not be freed). If the victim deque is Resumable it is then marked
-as Muggable, and possibly a new deque is created for the thieving worker thread
-if it has none (which is the case when a blocked future is encountered on line
+as Muggable, and a new deque is created for the thieving worker thread if it has
+none (which is the case when a blocked future is encountered on line
 \ref{line:blocked_future}). If a node could not be stolen, the steal procedure
 is repeated.
 
 The calls to \texttt{rebalanceStealables} on lines \ref{line:rebalance_1} and
 \ref{line:rebalance_2} are to balance the load of stealable deques among the
 worker thread stealable sets. This is done so that the chance of selecting a
-stealable deque given a victim worker thread stays uniform. This is called when
-a deque has been removed from a worker thread \(v\)'s stealable set- it randomly
-chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is done,
-otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if \(v^\prime\)
-has one.
+stealable deque given a victim worker thread stays uniform. This is performed
+when a deque has been removed from a worker thread \(v\)'s stealable set - it
+randomly chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is
+done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
+\(v^\prime\) has one.
 
 \begin{algorithm}
-\caption{Main Scheduling Loop ($w$ is the currently executing worker thread)}\label{alg:scheduling_loop}
+\caption{Main Scheduling Loop ($w$ is the currently executing worker thread)}
+\label{alg:scheduling_loop}
 \begin{algorithmic}[1]
     \Function{schedulingLoop}{}
         \While{computation is not done} \label{line:loop}
@@ -902,6 +912,7 @@ has one.
 
 \begin{algorithm}
 \caption{Callback Procedure (called upon completion of the blocked future $f$)}
+\label{alg:callback}
 \begin{algorithmic}[1]
     \algrestore{loop}
     \Function{callBack}{$suspendedDeq$} \label{line:callback}
@@ -970,6 +981,112 @@ has one.
 \section{Required Runtime Support for Latency-Hiding}
 \label{section:required_runtime_support_for_latency_hiding}
 
+The ProWS-R algorithm on its own is not enough to enable latency-hiding
+\footnote{This section is based off the work by Singer et. al on Cilk-L
+\cite{singer_scheduling_2019}, a latency-hiding extension of Cilk that uses the
+ProWS algorithm, with considerations on how to integrate with the mechanisms
+involved with Rust futures.}. To truly support latency-hiding, additional
+runtime special considerations must be accounted for to support the core
+scheduling algorithm. Scheduling futures is one thing, but actually hiding the
+latency in an efficient manner is another. Essentially, the runtime support
+needs to answer the question: how can latency incurring operations be performed
+asynchronously, while worker threads can still make progress on the primary
+computation?
+
+The crux of the problem is that given a fixed number of \(P\) worker threads, it
+is undesirable for any of the \(P\) worker threads to be doing anything except
+for executing nodes. Anything that a worker thread does outside of this only
+contributes to scheduler overhead. To avoid placing the burden of processing
+latency incurring operations on a worker thread, the ProWS-R runtime uses an
+additional thread, named the I/O thread, dedicated to solely this task. This
+relieves the worker threads of having to sacrifice time that could otherwise
+have been spent executing work.
+
+Naturally, at first glance this may seem to bring little benefit, as introducing
+an additional thread simply means that now hardware resource usage needs to be
+split among \(P + 1\) threads \footnote{Classic work-stealing runtimes create
+    \(P\) worker threads for \(P\) physical processor cores, to maximize
+hardware usage efficiency \cite{arora_thread_1998}.}. Although this is true, the
+runtime can take advantage of the fact that the I/O thread can simply be put to
+sleep whenever its services are not required (i.e. if there are no latency
+incurring operations to process). When the I/O thread is put to sleep, the
+underlying operating system thread scheduler can dedicate the entirety of the
+available hardware resources to the \(P\) worker threads \footnote{This is a
+    slight oversimplification: in principle the operating system thread
+    scheduler can dedicate all hardware resources to the \(P\) threads, but of
+    course in reality on a modern computing platform, other programs may be
+    running on the same machine and/or the underlying thread scheduler may not
+    be aware of the nature of the work-stealing worker threads. Fortunately, it
+can be shown that work-stealing is optimal to a constant factor even in the face
+of such an adversarial thread scheduler \cite{arora_thread_1998}.}, with the I/O
+thread not taking up any processor cycles.
+
+What remains is to see how the worker threads and I/O thread interact to process
+latency-incurring operations. The following functionality is required:
+
+\begin{enumerate}
+    \item \label{item:register_with_io_thread} When a worker thread encounters a
+        blocked future, it must somehow register this with the I/O thread and
+        delegate responsibility of dealing with the blocked future, so that the
+        worker thread can return to executing work as soon as possible.
+    \item \label{item:monitor_future} The I/O thread, upon registration of a
+        blocked future by a worker thread, must monitor the blocked future to
+        detect when it completes. Once complete, the I/O thread must perform the
+        callback in algorithm \ref{alg:callback} to make the future available
+        for a worker thread to resume again.
+\end{enumerate}
+
+One strategy to fulfill these requirements would be for the I/O thread to
+repeatedly poll to see if the file descriptors that futures are blocked on have
+become ready. This, however, is not ideal as it would necessitate the I/O thread
+to take up processor resources performing this repetitive polling, even when
+nothing is ready. An additional concern would be how often to perform the
+polling: too often and processor usage would be excessive; not often enough and
+resumable futures might not be made available quickly enough.
+
+To avoid these issues, this functionality is instead achieved by relying on the
+underlying operating system event queue: epoll on Linux, kqueue on BSD systems,
+and IOCP on Windows. The I/O thread has an instance of such an event queue. When
+a worker thread encounters a blocked future, it registers the desired file
+descriptor that the future is blocked on with the event queue of the I/O thread
+(note that this is done by the worker thread, not the I/O thread itself). Once
+it has done this, the worker thread can proceed with executing other work. Since
+registration of the file descriptor is done by the worker thread, this means the
+I/O thread need not wake up. This achieves part
+\ref{item:register_with_io_thread}.
+
+The I/O thread waits on events provided to it by the event queue: if there are
+no events to process, the I/O thread goes to sleep. When any events are ready,
+the event queue wakes the I/O thread, at which point the I/O thread can then
+execute the callback (algorithm \ref{alg:callback}) to make the previously
+blocked future (registered by a worker thread in part
+\ref{item:register_with_io_thread}) available for a worker thread to resume
+again. More concretely, when the underlying resource a future was blocked on
+becomes ready, the I/O thread triggers the corresponding waker \footnote{ As
+    described in section \ref{subsection:futures_in_rust}, the waker mechanism
+    is used for signaling if futures are ready to make progress. When the I/O
+    thread, awoken by the event queue, detects that a future is ready to make
+    progress, its waker will be triggered (the waker will then execute the
+    callback in algorithm \ref{alg:callback}). Typically, Rust futures simply
+    wrap other futures (that are then compiled into one large future,
+    represented by a state machine), so the responsibility of triggering a waker
+    to signal that a given future is ready to make progress can simply be
+    delegated to the nested future (the outer future will block on the inner
+    future, so if the inner future can make progress then so can the outer
+    future). A leaf future (a future that contains no nested futures), however,
+has no nested future to pass this responsibility down to: instead, it registers
+the resource it is blocked on with the I/O thread event queue (part
+\ref{item:register_with_io_thread}).} which then executes the callback. This
+achieves part \ref{item:monitor_future}.
+
+By relying on the underlying operating system event queue, the I/O thread only
+ever uses processor cycles whenever a blocked future becomes resumable, and
+needs its corresponding callback executed. At all other times it is asleep, and
+the available processing resources can instead be fully utilized by the worker
+threads to execute work. In between the time a worker thread encounters a
+blocked future and the future becomes resumable, it performs useful work, thus
+hiding the latency incurring operation of the blocked future.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Implementation: Time is an Illusion}
@@ -997,29 +1114,13 @@ has one.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\chapter{Summary}
+\chapter{Conclusion: Patience Is Not a Virtue}
+
+\section{Summary}
 
 \section{Lessons Learned}
 
 \section{Future Work}
-
-\section{Final Reminder}
-
-The body of your dissertation, before the references and any appendices,
-\emph{must} finish by page~40. The introduction, after preliminary material,
-should have started on page~1.
-
-You may not change the dissertation format (e.g., reduce the font size, change
-the margins, or reduce the line spacing from the default 1.5 spacing). Be
-careful if you copy-paste packages into your document preamble from elsewhere.
-Some \LaTeX{} packages such as \texttt{geometry}, \texttt{fullpage}, or
-\texttt{savetrees} change the margins of your document. Do not include them!
-
-Over length or incorrectly-formatted dissertations will not be accepted and you
-would have to modify your dissertation and resubmit. You cannot assume we will
-check your submission before the final deadline and if it requires resubmission
-after the deadline to conform to the page and style requirements you will be
-subject to the usual late penalties based on your final submission time.
 
 \bibliographystyle{plain}
 \bibliography{references}
