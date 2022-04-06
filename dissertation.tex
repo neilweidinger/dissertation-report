@@ -199,10 +199,12 @@ design, implementation, and evaluation of ProWS-R, a variant of ProWS that is
 adapted for the particular futures found in Rust and its stringent safety
 guarantees.
 
-This report describes ProWS-R, a variant of ProWS that is designed for the
+This report describes ProWS-R, a variant of ProWS that is adapted for the
 particular futures found in Rust, as well as taking careful consideration with
 regards to the stringent safety guarantees and ergonomics of the language. The
-implementation and subsequent evaluation of ProWS-R are ???
+accompanying runtime library Rayon-LH, a fork of the Rayon library, is also
+presented. The design, implementation and subsequent evaluation of ProWS-R are
+???
 
 The explicit goals of this project are as follows:
 
@@ -946,6 +948,7 @@ done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
     \Function{steal}{}
         \While{$true$}
             \State $victim \gets \text{chooseRandomVictim()} $
+                \label{line:choose_random_victim}
             \State $ victimDeque \gets victim \text{.stealableSet.chooseRandom()} $
                 \label{line:choose_random}
             \If{$victimDeque \text{.state} = \textbf{MUGGABLE}$}
@@ -1033,8 +1036,9 @@ contributes to scheduler overhead. To avoid placing the burden of processing
 latency-incurring operations on a worker thread, the ProWS-R runtime uses an
 additional thread, named the I/O thread, dedicated solely to this task
 \footnote{The I/O thread capability is provided by the async-io crate
-\cite{noauthor_async-io_2022}}. This relieves the worker threads of having to
-sacrifice time that could otherwise have been spent executing work.
+\cite{noauthor_async-io_2022}, which abstracts over varying operating system
+event queues}. This relieves the worker threads of having to sacrifice time that
+could otherwise have been spent executing work.
 
 Naturally, at first glance this may seem to bring little benefit, as introducing
 an additional thread simply means that now hardware resource usage needs to be
@@ -1159,6 +1163,7 @@ implementation done as part of this project answer the above questions. TODO:
 section overviews
 
 \section{Rayon-LH Architecture Overview}
+\label{section:rayon-lh_architecture_overview}
 
 As the focus of this project is to present a proof of concept implementation of
 latency-hiding work-stealing that integrates with the Rust language and its
@@ -1307,6 +1312,7 @@ guarded by a lock to support concurrent operation. TODO: should I remove all
 this fluff on implementation detail
 
 \subsubsection*{The Stealables Struct}
+\label{subsubsection:the_stealables_struct}
 
 The Stealables struct is used to abstract over the \(P\) stealable sets, one for
 each WorkerThread struct. A single Stealables struct is created during Registry
@@ -1407,24 +1413,23 @@ interfaces or type classes in other languages.} (shown in figure
 \end{figure}
 
 Similar to how in Cilk deques store pointers to closures, in Rayon Deques do not
-directly store types that implement the \texttt{Job} trait, but instead
-type-erased \footnote{Type erasure is essentially ad-hoc polymorphism using
-    dynamic dispatch that allows arbitrary concrete types to be used behind a
-single generic (yet also concrete) type-erased type \cite{kilian_c_nodate}.}
-objects to Jobs. This allows arbitrary concrete types that implement the
-\texttt{Job} trait (note the \texttt{this} parameter in \texttt{execute} is a
-pointer type, rather than a concrete type) to be stored in Deques as a single
-homogeneous type-erased Job type. This type-erased type is the \texttt{JobRef}
-struct (basically two pointers), shown in figure \ref{fig:job_ref}, and is what
-is stored in Deques. The \texttt{pointer} field is a pointer to the captured
-environment and other metadata, and the \texttt{execute\_fn\_pointer} is a
-function pointer to the concrete implementation of the \texttt{execute} function
-of the concrete type that implements \texttt{Job} \footnote{Readers experienced
-with Rust may recognize this as a hand-rolled trait object. A hand-rolled
-version is used to avoid lifetime quarrels with the Rust borrow checker.}.
-WorkerThreads, when executing the scheduling loop, push, pop, and steal these
-\texttt{JobRef} objects, and execute the work node they represent by calling
-\texttt{execute\_fn\_pointer} and passing in the \texttt{pointer} field.
+directly store types that implement the \texttt{Job} trait, but instead ``fat
+pointers'': dynamically dispatched Job types. This allows arbitrary concrete
+types that implement the \texttt{Job} trait (note the \texttt{this} parameter in
+\texttt{execute} is a pointer type, rather than a concrete type) to be stored in
+Deques as a single homogeneous fat pointer Job. This fat pointer type is the
+\texttt{JobRef} struct (basically two pointers), shown in figure
+\ref{fig:job_ref}, and is what is stored in Deques. The \texttt{pointer} field
+is a pointer to the captured environment and other metadata, and the
+\texttt{execute\_fn\_pointer} is a function pointer to the concrete
+implementation of the \texttt{execute} function of the concrete type that
+implements \texttt{Job} \footnote{Readers experienced with Rust may recognize
+    this as a hand-rolled trait object. A hand-rolled version using raw pointers
+is used to avoid lifetime quarrels with the Rust borrow checker (care is taken
+to ensure safety).}. WorkerThreads, when executing the scheduling loop, push,
+pop, and steal these \texttt{JobRef} objects, and execute the work node they
+represent by calling \texttt{execute\_fn\_pointer} and passing in the
+\texttt{pointer} field.
 
 \begin{figure}[ht]
     \begin{minted}[autogobble]{rust}
@@ -1480,10 +1485,10 @@ that it is now safe to pop the stack frame the \texttt{StackJob} lives on.
 As \texttt{StackJob}s are generic (parametric polymorphism resolved at
 compile-time), a unique \texttt{StackJob} type is created for every unique
 function pointer or compiler-generated closure it wraps. This is where the
-type-erased nature of the \texttt{JobRef} struct truly shines: an infinite
-number of concrete \texttt{StackJob} or any other Job type that can provide an
-\texttt{execute} function through the \texttt{Job} trait can be represented
-using a single uniform \texttt{JobRef} type.
+dynamically dispatched nature of the \texttt{JobRef} struct truly shines: an
+infinite number of concrete \texttt{StackJob} or any other Job type that can
+provide an \texttt{execute} function through the \texttt{Job} trait can be
+represented using a single uniform \texttt{JobRef} type.
 
 \subsubsection*{FutureJobs}
 
@@ -1524,11 +1529,11 @@ not moved from its original memory location.
         let future_job = rayon::FutureJob::new(network_request());
         pin_mut!(future_job); // pin future_job on stack
         let future_job_handle = future_job.spawn();
-        // ... execute some code in parallel to future_job
+        // ... execute some code in parallel while
+        // ... future_job hides its latency
         let result = future_job_handle.await_future_job(); 
-        // Rust's type system ensures that future_job is still
-        // pinned on the stack by the time the future_job
-        // is awaited
+        // future_job guaranteed to not have moved in memory
+        // by the time future_job is awaited
     \end{minted}
     \caption{\texttt{FutureJob} API, demonstrating pinning on the stack}
     \label{fig:future_job_api}
@@ -1543,7 +1548,7 @@ return value is simply deposited and the latch is tripped, just like a
 \texttt{StackJob}. Otherwise, if the future returns \texttt{Poll::Pending}
 indicating the future is blocked, lines \ref{line:future_start} -
 \ref{line:future_end} of the scheduling loop are performed: the active Deque of
-the executing WorkerThread is suspended and the resource the future is blocked
+the executing WorkerThread is suspended, and the resource the future is blocked
 on is registered with the I/O thread event queue (section
 \ref{subsection:event_queues}). The previously active Deque is put back in the
 Registry \texttt{deque\_bench} so that it may have somewhere to live in memory.
@@ -1551,9 +1556,9 @@ Registry \texttt{deque\_bench} so that it may have somewhere to live in memory.
 At some point in the future when the I/O thread event queue detects the resource
 is ready to be used, the I/O thread is awoken and triggers the
 \texttt{FutureJobWaker}. The \texttt{FutureJobWaker} executes \footnote{Note it
-    is the I/O thread that is executing the callback procedure, not a worker
-thread. This takes care of the issue that the \texttt{Worker} handle to a deque
-is not safe for concurrent use, discussed in section
+    is the single I/O thread that is executing the callback procedure, not a
+    worker thread. This takes care of the issue that the \texttt{Worker} handle
+to a deque is not safe for concurrent use, discussed in section
 \ref{subsubsection:deque_component}.} the callback procedure of algorithm
 \ref{alg:callback}: the \texttt{JobRef} representing the previously blocked
 \texttt{FutureJob} is pushed back on the bottom of the suspended Deque, the
@@ -1564,13 +1569,83 @@ provide the latency-hiding capabilities of ProWS-R.
 
 \section{Differences between Rayon and Rayon-LH}
 
-Although Rayon-LH builds upon much of the existing Rayon infrastructure (the
-Registry, )
+Although Rayon-LH builds upon much of the existing Rayon infrastructure, much of
+it needed to be heavily modified and new infrastructure added to support
+ProWS-R. While the overarching philosophy of representing work nodes as
+\texttt{JobRef}s stored in Deques that are worked on by WorkerThreads is the
+same, every single component outlined in section
+\ref{section:rayon-lh_architecture_overview} had to be overhauled or added (the
+Stealables and StealableSets components are new additions).
 
-Talk about why Rayon-LH needs shared state that all workerthreads can see (deque
-shared state is required, not required in Rayon)
+A key contribution of Rayon-LH is also the \texttt{FutureJob}: this component is
+what provides the ability to integrate Rust futures with ProWS-R in a seamless
+manner. The \texttt{FutureJob} neatly takes advantage of the Rust waker
+machinery to efficiently provide latency-hiding work-stealing capabilities. The
+original Rayon scheduling algorithm and steal procedures were completely gutted
+and replaced by the respective ProWS-R procedures. At the same time, ProWS-R
+provides almost a sort of ``backwards compatibility'' with the tried and true
+classic work-stealing algorithm, in the sense that if latency-incurring
+operations (i.e. \texttt{FutureJob}s) are not used, the scheduling algorithm is
+the exact same and also provides the exact same performance (discussed in
+section
+\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}).
+
+Arguably, a weakness of Rayon-LH is that it requires far more shared state to
+perform its scheduling capabilities than does Rayon. All WorkerThreads make
+frequent use of the Stealables mapping (section
+\ref{subsubsection:the_stealables_struct}), which means extreme care needs to be
+taken to ensure concurrency correctness. Rayon, while it does also have
+its share of hair-raising concurrency traps for things like thread sleeping and
+notification (that Rayon-LH also inherits), has no need for WorkerThreads to
+interact with a Stealables-like component.
 
 \section{Pitfalls}
+
+A complete memoir of the migraine-inducing false assumptions and traps
+encountered during the implementation of Rayon-LH could likely fill an entire
+tome (with possibly yet even more undiscovered). Here is a short non-exhaustive
+list:
+
+\begin{itemize}
+    \item The \texttt{FutureJobWaker} must ensure that it begins execution of
+        the callback procedure in algorithm \ref{alg:callback} only
+        \textit{after} the deque suspension process on line
+        \ref{line:deque_suspension} is fully complete. Without a synchronization
+        primitive like a latch, it could be the case that the callback executes
+        too soon and insidiously corrupts state.
+    \item The \texttt{FutureJobWaker} must explicitly notify a WorkerThread that
+        work is available again after executing the callback procedure where it
+        pushes the previously suspended \texttt{FutureJob} back on the Deque.
+        Otherwise it is possible all WorkerThreads are asleep, yet there is work
+        to be executed, and the program never terminates.
+    \item Unlike in the pseudocode of algorithm \ref{alg:steal}, in practice the
+        steal procedure retries only a fixed number of times before the
+        WorkerThread goes to sleep (to avoid futilely attempting to steal if
+        there is no work available). Consequently, particularly if running on a
+        machine with a large number of processors, it could be the case that all
+        awake WorkerThreads fail to randomly select the one victim StealableSet
+        (line \ref{line:choose_random_victim}) that has work available. Since no
+        WorkerThread selects this StealableSet, no WorkerThread finds any work,
+        and all WorkerThreads go to sleep. Again, there is work to be executed
+        but no WorkerThreads awake to execute it, and the program never
+        terminates. Rayon-LH deals with this by adding a final brute-force
+        linear scan of StealableSets, to search for a stealable Deque if all
+        previous random steal attempts failed.
+    \item The general concept of fallible operations that must be retried. Due
+        to the nature of WorkerThreads running in parallel, it's clearly
+        possible that a WorkerThread beats another WorkerThread to performing an
+        operation. What is less clear is how to deal with this in ProWS-R: a
+        common approach taken in Rayon-LH is to allow for operations to fail,
+        but retry a fixed number \footnote{In the current implementation these
+        limits are arbitrarily set, likely a more rigorous analysis can be
+        performed to find a more suitable number.} of times.
+    \begin{itemize}
+        \item An example of this is in the steal procedure: two WorkerThreads
+            may randomly select the same victim Deque in the Muggable state, but
+            only one will succeed in mugging it. The other WorkerThread must
+            retry the steal procedure.
+    \end{itemize}
+\end{itemize}
 
 \section{Implementation Challenges: Concurrent Programming is Hard}
 
