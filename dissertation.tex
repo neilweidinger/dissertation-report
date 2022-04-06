@@ -4,6 +4,7 @@
 \usepackage{amsmath}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{minted}
 \usepackage[bookmarks=true]{hyperref}
 \hypersetup{
     colorlinks=true,
@@ -171,10 +172,11 @@ termed the ``borrow checker''. It also has first class support for asynchronous
 programming through the use of futures (futures in Rust have some idiosyncrasies
 described in section \ref{section:futures}) and a quickly growing
 ecosystem surrounding asynchronous programming in Rust. Rayon
-\cite{noauthor_baby_nodate, stone_how_2021} is a widely-used library level
-implementation (Cilk and its derivatives consist of a both Cilk to C level
-compiler and a runtime library) of work-stealing that supports task-level
-fork-join parallelism, but without latency-hiding.
+\cite{noauthor_rayon_2022, noauthor_baby_nodate, stone_how_2021} is a
+widely-used library level implementation for Rust programs (Cilk and its
+derivatives consist of a both Cilk to C level compiler and a runtime library) of
+work-stealing that supports task-level fork-join parallelism, but without
+latency-hiding.
 
 Futures in Rust, unlike the hand-written futures used in Cilk-L, are easily
 composable: the compiler automatically generates a state machine that represents
@@ -571,6 +573,7 @@ computations using DAG model
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Conceptual Latency-Hiding: To Wait Or Not to Wait?}
+\label{chapter:conceptual_latency-hiding:_to_wait_or_not_to_wait?}
 
 This chapter describes the high-level overview of the ProWS-R latency-hiding
 work stealing algorithm, without diving into the details of the implementation.
@@ -681,6 +684,7 @@ active deques of any other workers).
 \subsection{Data Structures}
 
 \subsubsection*{Deques}
+\label{subsubsection:deques}
 
 Like in classic work-stealing, nodes that represent work in the computational
 DAG are stored in deques. Deques are assumed to have support for concurrent
@@ -753,6 +757,7 @@ state. In this state a worker thread can steal the entire deque at once (a
 mugging), and become the worker thread's new active deque.
 
 \subsubsection*{Stealable Sets}
+\label{subsubsection:stealable_sets}
 
 In order to keep track of stealable deques, each worker thread owns a
 \textbf{\textit{stealable set}}. This set contains deques that have ready nodes
@@ -812,28 +817,30 @@ supported by ProWS, and it is vital that ProWS-R take specific care to handle
 \textit{repeatedly polled futures}. Multiple polled futures can happen, for
 example, when two futures are manually polled immediately after one another
 using the same waker, like when using the \texttt{join} function \footnote{The
-    \texttt{join} function in the Rust futures crate \cite{noauthor_join_nodate}
-    can be used to create a future that concurrently executes two or more
-    futures (note: not in parallel). It does this by polling the two or more
-    futures passed to it in sequential order, passing and cloning its waker
-    every time. This means as soon as at least one of the futures is ready to
-    make progress the \texttt{join} future is awoken and can be rescheduled for
-    execution. These multiple futures can all trigger the waker clones that wake
-    up the same future, hence the need for ProWS-R to support repeatedly polled
-    futures.}. Fortunately, supporting this is trivial \footnote{While trivial,
-    early versions of the implementation incorrectly assumed that when a
-    callback is executed, the suspended deque associated with that callback will
-    always be Suspended. This led to all sorts of extremely subtle and difficult
-    to diagnose issues where scheduler state eventually became corrupted, since
-nodes would be wrongly pushed to deques more than once, possibly leading to the
-program never terminating or other consequent problems.}: all that is required
-is a check (line \ref{line:sus_check}) to see if the deque the future was
-suspended with is already unsuspended, and if so, the callback does not perform
-any actions. If, however, the deque is still suspended, the callback pushes the
-future back to the bottom of the deque, transitions it to Resumable, and adds it
-to a random worker thread's stealable set if the deque is not already in one.
-Doing this the callback makes the now-resumable future ready to be executed by a
-worker thread again.
+    \texttt{join} function in the Rust futures crate \footnote{Crates in Rust
+    are essentially synonymous to packages or libraries in other languages.}
+    \cite{noauthor_join_nodate} can be used to create a future that concurrently
+    executes two or more futures (note: not in parallel). It does this by
+    polling the two or more futures passed to it in sequential order, passing
+    and cloning its waker every time. This means as soon as at least one of the
+    futures is ready to make progress the \texttt{join} future is awoken and can
+    be rescheduled for execution. These multiple futures can all trigger the
+    waker clones that wake up the same future, hence the need for ProWS-R to
+    support repeatedly polled futures.}. Fortunately, supporting this is trivial
+    \footnote{While trivial, early versions of the implementation incorrectly
+        assumed that when a callback is executed, the suspended deque associated
+        with that callback will always be Suspended. This led to all sorts of
+        extremely subtle and difficult to diagnose issues where scheduler state
+        eventually became corrupted, since nodes would be wrongly pushed to
+    deques more than once, possibly leading to the program never terminating or
+other consequent problems.}: all that is required is a check (line
+\ref{line:sus_check}) to see if the deque the future was suspended with is
+already unsuspended, and if so, the callback does not perform any actions. If,
+however, the deque is still suspended, the callback pushes the future back to
+the bottom of the deque, transitions it to Resumable, and adds it to a random
+worker thread's stealable set if the deque is not already in one. Doing this the
+callback makes the now-resumable future ready to be executed by a worker thread
+again.
 
 When a worker thread cannot find work to execute in its active deque (line
 \ref{line:no_work}), it must become a thief and steal from elsewhere. The steal
@@ -1022,7 +1029,7 @@ is undesirable for any of the \(P\) worker threads to be doing anything except
 for executing nodes. Anything that a worker thread does outside of this only
 contributes to scheduler overhead. To avoid placing the burden of processing
 latency-incurring operations on a worker thread, the ProWS-R runtime uses an
-additional thread, named the I/O thread, dedicated to solely this task. This
+additional thread, named the I/O thread, dedicated solely to this task. This
 relieves the worker threads of having to sacrifice time that could otherwise
 have been spent executing work.
 
@@ -1117,20 +1124,330 @@ hiding the latency-incurring operation of the blocked future.
 
 \chapter{Implementation: Time is an Illusion}
 
-\section{Scheduler Overview}
+This chapter describes the technical details and experience of the prototype
+implementation of ProWS-R and its corresponding runtime. While the conceptual
+concepts of ProWS-R described in chapter
+\ref{chapter:conceptual_latency-hiding:_to_wait_or_not_to_wait?} suffice for a
+theoretical latency-hiding work-stealing scheduler, naturally in practice
+additional considerations need to be taken. Presented only with the high-level
+scheduler algorithms (algorithms \ref{alg:scheduling_loop}, \ref{alg:callback},
+and \ref{alg:steal}), questions regarding an efficient and idiomatic real-world
+implementation still remain. Concretely:
+
+\begin{itemize}
+    \item How are work nodes represented, in a library-level work-stealing
+        implementation (as opposed to a compiler based implementation such as in
+        Cilk)?
+    \item How are work nodes that represent latency-incurring operations
+        represented, particularly in regards to facilitating the use of the Rust
+        futures language feature?
+    \item How is shared scheduler state managed and updated concurrently (thread
+        safety), without detrimental performance impacts?
+    \item Where are work nodes and deques stored in memory? How is memory safety
+        ensured (e.g. blocked futures must not have their state and data freed
+        before resumption)?
+    \item How does the scheduler implementation hook into the underlying
+        operating system event queue?
+\end{itemize}
+
+Presented in this chapter is a detailed description of how the proof of concept
+implementation done as part of this project answer the above questions. TODO:
+section overviews
+
+\section{Rayon-LH Architecture Overview}
+
+As the focus of this project is to present a proof of concept implementation of
+latency-hiding work-stealing that integrates with the Rust language and its
+support for asynchronous programming, the implementation is a fork (henceforth
+referred to as Rayon-LH) \cite{weidinger_rayon-lh_2021} of the widely used Rayon
+library \cite{noauthor_rayon_2022, noauthor_baby_nodate, stone_how_2021}. Rayon
+is a library-level implementation of classic work-stealing for Rust programs.
+Since Rayon is a classic work-stealing implementation, it does not account for
+latency-incurring operations: users are explicitly warned not to schedule I/O or
+other latency incurring operations for risk of causing worker threads to block
+and performance suffering \cite{noauthor_rayon_nodate}. The desire to mix both
+compute heavy and I/O operations in a more general purpose Rayon style interface
+is a common refrain by users \cite{noauthor_does_nodate, rodyamirov_how_2020}.
+The goal of the Rayon-LH implementation is to provide the ability for users to
+easily parallelize their programs that involve not just compute bound
+operations, but operations that incur latency as well.
+
+Building on top of Rayon has allowed Rayon-LH to take advantage of the existing
+infrastructure for classic work-stealing, and focus on extending the library
+with latency-hiding capabilities. Here a brief overview of the entire
+architecture of the implementation is presented, with details on the differences
+with Rayon.
+
+It perhaps is best to first take a step back and understand the concrete data
+structures involved in Rayon-LH. Doing so will provide a general understanding
+of the layout of the implementation, and the following sections can then
+describe the specific interactions involved between the various components as
+they execute the ProWS-R scheduling algorithm. The core components of Rayon-LH
+are broken down into the following: the \textbf{\textit{Registry}} (central
+thread pool), \textbf{\textit{Deques}} (concurrent work-stealing deques),
+\textbf{\textit{StealableSets}} (stealable sets containing stealable deques),
+the \textbf{\textit{Stealables}} construct (abstracts over StealableSets and
+manages scheduler shared state), \textbf{\textit{WorkerThreads}} (worker threads
+in thread pool), and \textbf{\textit{Jobs}} (represent work nodes). Additional
+minor implementation details deemed not critical to understanding the
+implementation are omitted.
+
+TODO: put in a diagram of the architecture
+
+\subsubsection*{The Registry}
+
+The life of the scheduler begins with the Registry struct \footnote{Structs in
+    Rust are similar to structures in C (a struct consists of only data fields).
+    Rust adds the ability to define functions that accept a given struct as a
+    special parameter and use them with traditional OOP-like method syntax,
+    making them, at least on the surface, appear similar to traditional objects
+    found in languages with OOP features.}: a single global Registry instance
+    \footnote{Rayon and Rayon-LH actually support creating multiple Registry
+    instances to represent multiple thread pools, but this feature does not
+affect the implementation design much so will not be discussed.} is created for
+a given program. The Registry can essentially be thought of as a thread pool
+consisting of WorkerThread structs. It is responsible for creating the
+WorkerThreads that will then execute the primary scheduling loop in algorithm
+\ref{alg:scheduling_loop}.
+
+Importantly, it also stores the \texttt{deque\_bench}
+and \texttt{injector} . The \texttt{deque\_bench} is a concurrent sharded hash
+map (provided by the DashMap crate \cite{joel_dashmap_2022}) that stores Deques
+that are not currently the active deque of a WorkerThread (the reasoning for
+this will be explained in subsequent sections). The \texttt{injector} is a
+concurrent FIFO queue used to inject Jobs from outside of the threadpool (the
+primary purpose of this queue is to inject the root work node of a computation
+into the thread pool from the main thread of the program).
+
+After initializing \(P\) WorkerThreads for \(P\) \textit{logical} cores (this
+will further be discussed in the evaluation in section
+\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)})
+that execute the main scheduling loop, the Registry waits for WorkerThreads to
+indicate computation is fully complete (no more Jobs can be found). The Registry
+is created on the program main thread, and will block and go to sleep waiting
+for this completion indication from the WorkerThreads \footnote{Rayon uses a
+thread sleep/notification mechanism based on atomic latches and counters, an
+overview can be found in \cite{noauthor_rayon-sleep_2022}.}.
+
+\subsubsection*{Deques}
+
+Deques are work-stealing double-ended queues that support the concurrent
+operations described in section \ref{subsubsection:deques}. A Deque contains
+nodes in the computational DAG representing work to be executed; in Rayon-LH
+nodes are implemented as \textit{\textbf{Jobs}} (discussed in section
+\ref{section:jobs:_representing_work}). Each Deque is assigned a unique index,
+so that it may be uniquely referenced throughout the scheduler. The primary
+purpose of this index is to provide quick constant time retrieval (as keys in a
+hash map) of deques from the Registry \texttt{deque\_bench} and the Stealables
+mapping (discussed shortly). References (essentially pointers in Rust) cannot be
+used, since this would lead to pointer invalidation (dangling pointers) as the
+\texttt{deque\_bench} or Stealables mapping is updated (not to mention likely
+incredible pain dealing with lifetimes from the Rust borrow checker, that tries
+to prevent such programming practices). Apart from the unique index, the Deque
+struct is just a simple wrapper around the work-stealing deque implementation
+provided by the Crossbeam crate \cite{noauthor_crossbeam_2022}.
+
+A key thing to note though, is that the Crossbeam deque implementation actually
+provides two handles to the underlying deque: a \texttt{Worker} and a
+\texttt{Stealer}. A \texttt{Worker} handle allows pushing and popping to the
+bottom of the deque, and only one such handle may be created (and is
+\textbf{not} thread-safe). A \texttt{Stealer} handle allows only stealing from
+the top of the deque, but multiple may be created. This has implications for
+Rayon-LH, as this means multiple \texttt{Stealer}s to the same deque can be
+created and used concurrently by different worker threads in a thread-safe
+manner throughout the program, but only a single \texttt{Worker} (giving access
+to the bottom of a deque) may be in use by a single thread at a time (note that
+it can still be \textit{sent} to other threads, just may not be used
+concurrently).
+
+As such, a Deque struct is more specifically a wrapper around a \texttt{Worker}:
+only a single thread may access and use a Deque struct at a time. Rayon-LH takes
+\textbf{very} special care to only use a Deque struct on a single thread at a
+time \footnote{Those more experienced with Rust may point out that the
+    \texttt{Send} and \texttt{Sync} traits should address these issues:
+    unfortunately since \texttt{Worker}s are \texttt{Send} but not
+    \texttt{Sync}, there are many places that the compiler will not allow Deque
+    structs to be used, as it falsely presumes Deques will want to be used
+    concurrently. Since Rayon-LH takes care to only ever use Deques in a
+    non-concurrent manner (by only passing around ownership, and never creating
+references), an \texttt{unsafe impl Sync} is provided for Deques to resolve
+this.}: this is achieved by relying on Rust's ownership system (destructive
+moves) and never creating references to a Deque or anything within it.
+
+\subsubsection*{StealableSets}
+
+StealableSets, as the name suggests, are used to represent stealable sets in
+ProWS-R, and support the operations described in section
+\ref{subsubsection:stealable_sets}. Instead of storing Deques, however,
+StealableSets only store the unique IDs of Deques (Deques are \textit{stored} in
+the Registry \texttt{deque\_bench}; StealableSets only need to keep track of
+which deques can be \textit{found} in a given deque set). Although it may seem
+trivial to implement a set of stealable deques by simply storing them in a set,
+the \texttt{chooseRandom} operation unfortunately precludes such a simple
+approach: sets typically do not support constant time retrieval of a
+\textbf{random} item \footnote{Many implementations indeed support iteration
+    over the items in a set, and the reader may wonder why Rayon-LH can not
+    simply iterate a random number of times to retrieve a randomly selected
+    item. Unfortunately, since stealable sets may potentially contain a large
+    number of deques (every time a suspended future is countered its deque is
+    added to a stealable set), this would require a \(O(n)\) iteration to get a
+random item from the set.}. To solve this, Rayon-LH uses a resizable array
+containing Deque IDs and a hash map of Deque IDs to their index in the
+array. When a random deque ID is requested, a random Deque ID in the array
+is selected and returned (constant time operation). The hash map is required for
+a constant time \texttt{remove} operation: the index of the desired deque ID to
+be removed from the set is looked up in the hash map, the Deque ID in the array
+at that index overwritten with the Deque ID at the end of the array, the array
+truncated by one, and the hash map indices updated/removed. All operations are
+guarded by a lock to support concurrent operation.
+
+\subsubsection*{The Stealables Struct}
+
+The Stealables struct is used to abstract over the \(P\) stealable sets, one for
+each WorkerThread struct. A single Stealables struct is created during Registry
+creation, and is kept alive in the system by having each WorkerThread hold an
+atomically reference-counted smart-pointer to it. The primary purpose of the
+Stealables struct is the Stealables mapping (the \texttt{deque\_stealers} field):
+this is a concurrent sharded hash map of Deque IDs to the Deque state, the
+worker thread whose stealable set they can be found in (if any), and the \texttt{Stealer}
+of the corresponding Deque. This information cannot simply be stored in the
+Registry \texttt{deque\_bench} as it does not include Deques in the Active state
+(why not is explained shortly). This Stealables mapping contains absolutely
+crucial shared scheduler state, and is used by WorkerThreads to coordinate and
+execute the ProWS-R algorithm \footnote{The Stealables mapping was a massive
+source of headaches stemming from concurrency bugs that eventually corrupted
+scheduler state. This is because although the concurrent hash map itself is thread-safe,
+a sequence of multiple operations is not guaranteed to be completed as an atomic
+unit. An atomic sequence of operations can only be performed while a reference
+into the hash map is held. This means if multiple operations to the Stealables
+mapping in one atomic unit is required (which ProWS-R frequently does), very
+special care must be taken to not drop the reference into the mapping while the
+operations are being performed. Figuring out which operations must be performed
+as an atomic unit was also not trivial.}. Abstracting over the stealable sets is
+necessary, since modifications to stealable sets naturally modify scheduler
+state, so the Stealables mapping must always be updated to reflect these
+changes.
+
+\subsubsection*{WorkerThreads}
+
+WorkerThreads are perhaps the life and soul of Rayon-LH: they are the components
+that execute the main ProWS-R scheduling loop and drive scheduler progress. Each
+of the \(P\) WorkerThreads contains its respective active Deque, an atomically
+reference-counted pointer to the Registry struct, and an atomically
+reference-counted pointer to the Stealables struct. The \(P\) WorkerThreads run
+the scheduling loop, performing the steal operation (algorithm \ref{alg:steal})
+when necessary, interacting with the various components described above.
+
+A key thing to note is that WorkerThreads take ownership of their active Deques,
+and as such Deques in the Active state are not found in the Registry
+\texttt{deque\_bench}. Recall that Deques wrap a \texttt{Worker} instance that
+must not be used concurrently: as mentioned, this is achieved by relying on
+Rust's ownership system and never creating references to Deques. By not creating
+references and only passing around ownership of Deques, the Rust compiler can
+ensure that only a single thread has access to a given Deque at a time
+\footnote{An \texttt{unsafe impl Sync} is still required since Deques are used
+in situations where it would be \textit{possible} for them to be used
+concurrently, and the compiler is not aware of the intentions of the Rayon-LH
+implementation. Consequently this manual opting-out of the compiler protections
+must be used.}. Deques are either owned by a single WorkerThread (if they are in
+the Active state), where they can only be accessed by that WorkerThread, or are
+stored in the \texttt{deque\_bench}. Although all threads in the system have
+access to the \texttt{deque\_bench}, the only time a Deque in the
+\texttt{deque\_bench} is used in a manner that would not be thread-safe is when
+the I/O thread pushes a resumable future Job back on the bottom of its suspended
+Deque when executing the callback in algorithm \ref{alg:callback}. However, this
+is only performed by the \textit{single} I/O thread, and hence does not pose a
+danger.
 
 \section{Jobs: Representing Work}
+\label{section:jobs:_representing_work}
+
+While conceptually a work node in the computational DAG is simple to understand,
+how is this actually implemented in practice? Cilk and its derivatives take an
+approach of using a combination of a compiler and runtime library to essentially
+manually create closures \footnote{In this context: functions with captured
+    references to their enclosing stack frames. In Cilk this is done by creating
+    Cilk ``activation frame'' structures. In Rust, closures are basically compiler
+    generated structs that contain references or copies to the closure's
+    environment, and a method that executes the closure's function using this
+captured environment.} (since the C language itself provides no such feature)
+that are stored on the stacks of worker threads, and \textit{pointers} to these
+closures are stored in the deques that are subsequently popped and stolen to be
+dereferenced and the corresponding closure executed (using calls to
+\texttt{setjmp} and \texttt{longjmp} inserted by the Cilk compiler)
+\footnote{Please note this brief explanation is a massive oversimplification of
+the Cilk implementation.} \cite{frigo_implementation_1998}.
+
+Rust has the fortunate advantage of supporting closures as a built-in language
+feature. This means in Rayon-LH, the role that the Cilk compiler plays in
+creating closures can more or less be performed by the Rust compiler itself.
+Closures are represented by the \texttt{Job} trait \footnote{Traits in Rust are
+similar to interfaces or type classes in other languages.} (shown in   ): anything that
+implements the \texttt{Job} trait can be used as a closure in a Deque.
+
+\begin{figure}[ht]
+  \caption{MIR (simplified)}
+  \label{fig:mir}
+  \begin{minted}[autogobble]{rust}
+    struct Mir {
+        basic_blocks: Vec<BasicBlockData>,
+        // ...
+    }
+
+    struct BasicBlockData {
+        statements: Vec<Statement>,
+        terminator: Terminator,
+        // ...
+    }
+
+    struct Statement {
+        place: Place,
+        rvalue: Rvalue
+    }
+
+    enum Terminator {
+        Goto { target: BasicBlock },
+        If {
+            cond: Operand,
+            targets: [BasicBlock; 2]
+        },
+        // ...
+    }
+  \end{minted}
+\end{figure}
+
+The primary type of closure in Rayon is represented by the StackJob: a thin
+wrapper around a closure and a corresponding latch (a synchronization primitive)
+that lives on the stack of the WorkerThread that created it. Care must be taken
+by the WorkerThread to not clobber the stack while a StackJob has not yet been
+executed: this is done by the WorkerThread executing the primary scheduling loop
+looking for work to perform while the StackJob latch has not yet been tripped,
+and whatever WorkerThread that executes the StackJob tripping the latch to
+indicate to the original WorkerThread that it is safe to pop the stack frame the
+StackJob lives on.
+
+Similar to how in Cilk deques store pointers to closures, in Rayon Deques store
+not StackJobs directly, but instead type erased objects to Jobs. 
 
 \section{I/O Dispatch and Processing}
 \label{section:i/o_dispatch_and_processing}
 
-\section{Pitfalls: Concurrent Programming is Hard}
+\section{Differences between Rayon and Rayon-LH}
 
-\section{Implementation Challenges}
+Although Rayon-LH builds upon much of the existing Rayon infrastructure (the
+Registry, )
+
+Talk about why Rayon-LH needs shared state that all workerthreads can see (deque
+shared state is required, not required in Rayon)
+
+\section{Pitfalls}
+
+\section{Implementation Challenges: Concurrent Programming is Hard}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Evaluation: To Superlinear and Beyond (Not Really... Just Superlinear)}
+\label{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
 
 \section{Experimental Setup}
 
