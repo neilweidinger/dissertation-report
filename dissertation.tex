@@ -1229,7 +1229,7 @@ primary purpose of this queue is to inject the root work node of a computation
 into the thread pool from the main thread of the program).
 
 After initializing \(P\) WorkerThreads for \(P\) \textit{logical} cores (this
-will further be discussed in the evaluation in section
+will further be discussed in the evaluation in chapter
 \ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)})
 that execute the main scheduling loop, the Registry waits for WorkerThreads to
 indicate computation is fully complete (no more Jobs can be found). The Registry
@@ -1587,7 +1587,7 @@ provides almost a sort of ``backwards compatibility'' with the tried and true
 classic work-stealing algorithm, in the sense that if latency-incurring
 operations (i.e. \texttt{FutureJob}s) are not used, the scheduling algorithm is
 the exact same and also provides the exact same performance (discussed in
-section
+chapter
 \ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}).
 
 Arguably, a weakness of Rayon-LH is that it requires far more shared state to
@@ -1663,13 +1663,15 @@ disappears after trying to study it, particularly by running it in a debugger.}
 were encountered in the process of the implementation, and other bugs only
 showed their face after many thousands of program executions or when running
 into pathological input cases. To aid buggy-implementation diagnosis, heavy use
-of the logging system that Rayon-LH inherits from Rayon was made. While far from
-a panacea to the undying wish of the hardware to spite the implementation
-running on it, the logger output was instrumental to piecing together a
-narrative of why or why not the scheduler was performing certain operations and
-not others. Much like a detective investigating forensic evidence at a crime
-scene, the interleaved lines of thread logger output provided many clues when
-debugging Rayon-LH. Unfortunately, concurrent programming is far from
+of the logging system that Rayon-LH inherits from Rayon and stress tests in the
+form of repeatedly running the benchmarks in chapter
+\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
+was made. While far from a panacea to the undying wish of the hardware to spite
+the implementation running on it, the logger output was instrumental to piecing
+together a narrative of why or why not the scheduler was performing certain
+operations and not others. Much like a detective investigating forensic evidence
+at a crime scene, the interleaved lines of thread logger output provided many
+clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
 ``elementary, my dear Watson''.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
