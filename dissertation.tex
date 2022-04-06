@@ -1159,8 +1159,13 @@ implementation still remain. Concretely:
 \end{itemize}
 
 Presented in this chapter is a detailed description of how the proof of concept
-implementation done as part of this project answer the above questions. TODO:
-section overviews
+implementation done as part of this project answers the above questions. Section
+\ref{section:rayon-lh_architecture_overview} provides an architectural overview
+and section \ref{section:jobs:_representing_work} explains how work nodes are
+represented. Section \ref{section:differences_between_rayon_and_rayon-lh}
+outlines the specific contributions of the implementation. The implementation
+experience and challenges are then described in sections \ref{section:pitfalls}
+and \ref{section:implementation_challenges:_concurrent_programming_is_hard}.
 
 \section{Rayon-LH Architecture Overview}
 \label{section:rayon-lh_architecture_overview}
@@ -1421,7 +1426,7 @@ Deques as a single homogeneous fat pointer Job. This fat pointer type is the
 \texttt{JobRef} struct (basically two pointers), shown in figure
 \ref{fig:job_ref}, and is what is stored in Deques. The \texttt{pointer} field
 is a pointer to the captured environment and other metadata, and the
-\texttt{execute\_fn\_pointer} is a function pointer to the concrete
+\texttt{execute\_fn\_pointer} field is a function pointer to the concrete
 implementation of the \texttt{execute} function of the concrete type that
 implements \texttt{Job} \footnote{Readers experienced with Rust may recognize
     this as a hand-rolled trait object. A hand-rolled version using raw pointers
@@ -1450,12 +1455,13 @@ shown in figure \ref{fig:stackjob}: a thin wrapper around a Rust closure, a
 location in memory (the stack of the WorkerThread) to deposit the final return
 value of the closure, and a corresponding latch (a synchronization primitive).
 \texttt{StackJob}s, as the name implies, are stored on the stack of the
-WorkerThread that created them. WorkerThreads create and push \texttt{StackJob}s
-to their active Deques (unless the \texttt{StackJob} was created on the program
-main thread, for example the root computation node, in which case it is pushed
-on the global Registry \texttt{injector} queue). The
-\texttt{execute\_fn\_pointer} for \texttt{StackJob}s basically just executes the
-wrapped closure and trips the latch.
+WorkerThread that created them. WorkerThreads create \texttt{StackJob}s and push
+the corresponding \texttt{JobRef}s to their active Deques (unless the
+\texttt{StackJob} was created on the program main thread, for example the root
+computation node, in which case the \texttt{JobRef} is pushed on the global
+Registry \texttt{injector} queue). The \texttt{execute\_fn\_pointer} for
+\texttt{StackJob}s basically just executes the wrapped closure and trips the
+latch.
 
 \begin{figure}[ht]
     \begin{minted}[autogobble]{rust}
@@ -1466,8 +1472,8 @@ wrapped closure and trips the latch.
             R: Send,
         {
             latch: L,
-            func: UnsafeCell<F>,
-            result: UnsafeCell<JobResult<R>>,
+            func: F,
+            result: JobResult<R>,
         }
     \end{minted}
     \caption{\texttt{StackJob} type (simplified)}
@@ -1503,14 +1509,15 @@ merely wraps such a future.
 
 \begin{figure}[ht]
     \begin{minted}[autogobble]{rust}
-        pub struct FutureJob<F>
+        pub struct FutureJob<L, F>
         where
+            L: Latch + Sync,
             F: Future,
         {
-            latch: FutureJobLatch,
-            future: UnsafeCell<F>,
-            result: UnsafeCell<JobResult<F::Output>>,
-            waker: UnsafeCell<FutureJobWaker>,
+            latch: L,
+            future: F,
+            result: JobResult<F::Output>,
+            waker: FutureJobWaker,
         }
     \end{minted}
     \caption{\texttt{FutureJob} type (simplified)}
@@ -1568,6 +1575,7 @@ StealableSet for a WorkerThread to execute again. This harmonization of
 provide the latency-hiding capabilities of ProWS-R.
 
 \section{Differences between Rayon and Rayon-LH}
+\label{section:differences_between_rayon_and_rayon-lh}
 
 Although Rayon-LH builds upon much of the existing Rayon infrastructure, much of
 it needed to be heavily modified and new infrastructure added to support
@@ -1600,6 +1608,7 @@ notification (that Rayon-LH also inherits), has no need for WorkerThreads to
 interact with a Stealables-like component.
 
 \section{Pitfalls}
+\label{section:pitfalls}
 
 A complete memoir of the migraine-inducing false assumptions and traps
 encountered during the implementation of Rayon-LH could likely fill an entire
@@ -1643,11 +1652,14 @@ list:
         \item An example of this is in the steal procedure: two WorkerThreads
             may randomly select the same victim Deque in the Muggable state, but
             only one will succeed in mugging it. The other WorkerThread must
-            retry the steal procedure.
+            realize its desired deque has been disappeared before it got to it,
+            take care not to mistakenly corrupt state, and finally retry the
+            steal procedure.
     \end{itemize}
 \end{itemize}
 
 \section{Implementation Challenges: Concurrent Programming is Hard}
+\label{section:implementation_challenges:_concurrent_programming_is_hard}
 
 Undoubtedly, the experience of implementing Rayon-LH was quite challenging.
 The difficulties faced in this project largely stem from the inherent issue that
@@ -1679,13 +1691,88 @@ clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
 \chapter{Evaluation: To Superlinear and Beyond (Not Really... Just Superlinear)}
 \label{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
 
-\section{Experimental Setup}
+This chapter evaluates ProWS-R and Rayon-LH on the following: how effective the
+latency-hiding capabilities are when latency is injected in section
+\ref{section:latency-hiding_efficiency}, the impact of varying the level of
+compute vs I/O bound workloads in section
+\ref{section:compute_vs_i/o_bound_workloads}, and the scheduler overhead
+compared to classical work-stealing \ref{section:rayon-lh_scheduler_overhead}.
+The experimental setup is described in section \ref{section:experimental_setup}
+and the limitations of the implementation are discussed in section
+\ref{section:insights_and_limitations}.
 
-\section{Impact of Injecting Latency}
+\section{Experimental Setup}
+\label{section:experimental_setup}
+
+\section{Latency-Hiding Efficiency}
+\label{section:latency-hiding_efficiency}
+
+The biggest question the evaluation seeks to answer is, how efficient are the
+latency-hiding capabilities? In other words, given a computational DAG, what is
+the impact on program execution time when nodes in the DAG incur latency. To
+answer this, the implementation is evaluated on a benchmark that runs a
+distributed map and reduce example with simulated network latencies. The same
+benchmark is used in \cite{muller_latency-hiding_2016} and
+\cite{singer_scheduling_2019}, and is used here with the same parameters as both
+to allow for comparison.
+
+What we want to see in a benchmark that evaluates latency-hiding efficiency for
+ProWS-R and Rayon-LH, is how close the speedups given by the scheduler are to an
+``ideal'' latency-hiding scheduler. Like in \cite{singer_scheduling_2019}, the
+ideal scheduler is defined as the scheduler that never incurs latency on an
+operation. This is a bit of an unfair comparison for the Rayon-LH
+implementation, as this ideal scheduler is no longer latency-hiding as much as
+it is latency-eliminating (\textit{all} latency, even on the critical path, is
+removed), while in reality a truly ideal latency-hiding scheduler still suffers
+from the latency on the critical path, but manages to hide all other latency
+perfectly. But as work-stealing is intended for workloads that are work
+(\(T_1\)) dominated as opposed to span (\(T_\infty\)) dominated, this detail
+does not have much of an impact on the benchmarks.
+
+The distributed map and reduce benchmark is a classic divide-and-conquer
+operation that maps a function \(f(x)\) over a large set of \(n\) values, and
+reduces the resulting values with an associative binary operation \(g(x,y)\). An
+identity function \(id\) is used for cases where a reduction with only one
+operation must be performed. To simulate a real-world use case, each of the
+\(n\) values is assumed to be stored on a remote server and must be requested,
+which incurs latency. In the benchmark implementation, \(f(x)\) is simply the
+naive recursive parallel (with a serial base case) Fibonacci algorithm and
+\(g(x,y)\) sums the results modulo a constant. More specifically for the
+benchmark implementation: there are \(n = 5000\) ``remote'' connections, the
+\(n\) values ``retrieved'' over the network is the number 30 (to compute the
+30th Fibonacci number), the serial base is 25, and the modulo divisor is
+1,000,000,000.
+
+A diagram of a (partial) DAG for the distributed map and reduce example is shown
+in figure \ref{fig:map-reduce-dag}. The bolded red lines represent edges in the
+DAG that incur latency of the network request, that is simulated in the benchmark with a simple future
+that suspends for a desired duration. Without latency-hiding, \textit{each} of
+the latency-incurring edges must be incurred by the worker threads, while with
+(perfect) latency-hiding just the cost of the \textit{single} heaviest
+latency-incurring edge on the critical path is incurred.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/map-reduce.png}
+    \caption{A partial DAG for map and reduce}
+    \label{fig:map-reduce-dag}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_1.png}
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_50.png}
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_100.png}
+\end{figure}
 
 \section{Compute vs I/O Bound Workloads}
+\label{section:compute_vs_i/o_bound_workloads}
 
-\section{Limitations}
+\section{Rayon-LH Scheduler Overhead}
+\label{section:rayon-lh_scheduler_overhead}
+
+\section{Insights and Limitations}
+\label{section:insights_and_limitations}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
