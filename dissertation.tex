@@ -455,6 +455,7 @@ single processor.
 \end{itemize}
 
 \subsection{Analysis of Parallel Computations}
+\label{subsection:analysis_of_parallel_computations}
 
 \begin{itemize}
     \item To analyze the theoretical performance of multithreaded program, we
@@ -464,11 +465,12 @@ single processor.
     \item The \textbf{work} of a computation is the total time required to
         execute each computation node in the DAG. In other words, work is the
         time required to execute the computation on a single processor: \(T_1\).
-    \item The \textbf{span} of a computation is the length of the longest
-        sequence of computations that need to be executed serially, due to
-        computation dependencies represented as edges in the DAG. In other
-        words, the span is the running time if the computation could be run on
-        an infinite number of processors, denoted by \(T_\infty\).
+    \item The \textbf{span} (also called critical path) of a computation is the
+        length of the longest sequence of computations that need to be executed
+        serially, due to computation dependencies represented as edges in the
+        DAG. In other words, the span is the running time if the computation
+        could be run on an infinite number of processors, denoted by
+        \(T_\infty\).
     \item Ideally, to reduce execution time, a computation minimizes the work
         and span
     \item Using the above two definitions, we arrive at two very useful results:
@@ -568,6 +570,23 @@ TODO: describe how futures in Rust work here (e.g. state machine, async fns,
 executors, pinning, etc.)
 
 \subsection{Futures and DAGs}
+
+A diagram of a (partial) DAG for the distributed map and reduce example is shown
+in figure \ref{fig:map-reduce-dag}. The bolded red lines represent edges in the
+DAG that incur latency of the network request, that is simulated in the
+benchmark with a simple future that suspends for a desired duration. Without
+latency-hiding, \textit{each} of the latency-incurring edges must be incurred by
+the worker threads, while with (perfect) latency-hiding just the cost of the
+\textit{single} heaviest latency-incurring edge on the critical path is
+incurred. TODO: move this figure and explanation to the background, would
+provide a nice introduction and subsequent conclusion here
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/map-reduce.png}
+    \caption{A partial DAG for map and reduce}
+    \label{fig:map-reduce-dag}
+\end{figure}
 
 TODO: describe how futures can be incorporated into analysis of parallel
 computations using DAG model
@@ -1699,10 +1718,13 @@ compute vs I/O bound workloads in section
 compared to classical work-stealing \ref{section:rayon-lh_scheduler_overhead}.
 The experimental setup is described in section \ref{section:experimental_setup}
 and the limitations of the implementation are discussed in section
-\ref{section:insights_and_limitations}.
+\ref{section:insights_and_limitations}. All benchmark results and programs can
+be found in \cite{noauthor_rayon-lh_nodate}.
 
 \section{Experimental Setup}
 \label{section:experimental_setup}
+
+TODO: talk about averaging 10 runs too 
 
 \section{Latency-Hiding Efficiency}
 \label{section:latency-hiding_efficiency}
@@ -1711,58 +1733,98 @@ The biggest question the evaluation seeks to answer is, how efficient are the
 latency-hiding capabilities? In other words, given a computational DAG, what is
 the impact on program execution time when nodes in the DAG incur latency. To
 answer this, the implementation is evaluated on a benchmark that runs a
-distributed map and reduce example with simulated network latencies. The same
-benchmark is used in \cite{muller_latency-hiding_2016} and
-\cite{singer_scheduling_2019}, and is used here with the same parameters as both
-to allow for comparison.
+distributed map and reduce example with varying simulated network latencies, and the
+speedups measured. The same benchmark is used in
+\cite{muller_latency-hiding_2016} and \cite{singer_scheduling_2019}, and is used
+here with the same parameters as both to allow for comparison.
 
 What we want to see in a benchmark that evaluates latency-hiding efficiency for
 ProWS-R and Rayon-LH, is how close the speedups given by the scheduler are to an
 ``ideal'' latency-hiding scheduler. Like in \cite{singer_scheduling_2019}, the
-ideal scheduler is defined as the scheduler that never incurs latency on an
-operation. This is a bit of an unfair comparison for the Rayon-LH
-implementation, as this ideal scheduler is no longer latency-hiding as much as
+\textit{\textbf{Ideal}} scheduler is defined as the scheduler that never incurs
+latency on an operation. This is a bit of an unfair comparison for the Rayon-LH
+implementation, as this Ideal scheduler is no longer latency-hiding as much as
 it is latency-eliminating (\textit{all} latency, even on the critical path, is
-removed), while in reality a truly ideal latency-hiding scheduler still suffers
+removed), while in reality a truly Ideal latency-hiding scheduler still suffers
 from the latency on the critical path, but manages to hide all other latency
 perfectly. But as work-stealing is intended for workloads that are work
 (\(T_1\)) dominated as opposed to span (\(T_\infty\)) dominated, this detail
-does not have much of an impact on the benchmarks.
+does not have much of an impact on the benchmark results.
 
-The distributed map and reduce benchmark is a classic divide-and-conquer
-operation that maps a function \(f(x)\) over a large set of \(n\) values, and
-reduces the resulting values with an associative binary operation \(g(x,y)\). An
-identity function \(id\) is used for cases where a reduction with only one
-operation must be performed. To simulate a real-world use case, each of the
-\(n\) values is assumed to be stored on a remote server and must be requested,
-which incurs latency. In the benchmark implementation, \(f(x)\) is simply the
+The distributed map and reduce program is a classic divide-and-conquer operation
+that maps a function \(f(x)\) over a large set of \(n\) values, and reduces the
+resulting values with an associative binary operation \(g(x,y)\). An identity
+function \(id\) is used for cases where a reduction with only one operation must
+be performed. To simulate a real-world use case, each of the \(n\) values is
+assumed to be stored on a remote server and must be requested, which incurs
+latency.
+
+In the benchmark implementation (called MapReduceFib), \(f(x)\) is simply the
 naive recursive parallel (with a serial base case) Fibonacci algorithm and
-\(g(x,y)\) sums the results modulo a constant. More specifically for the
-benchmark implementation: there are \(n = 5000\) ``remote'' connections, the
-\(n\) values ``retrieved'' over the network is the number 30 (to compute the
-30th Fibonacci number), the serial base is 25, and the modulo divisor is
-1,000,000,000.
+\(g(x,y)\) sums the results modulo a constant. The following parameters were
+used: there are \(n = 5000\) ``remote'' connections, the \(n\) values
+``retrieved'' over the network is the number 30 (to compute the 30th Fibonacci
+number), the serial base case is 25, and the modulo divisor is 1,000,000,000. In
+the MapReduceFib benchmark, the ProWS-R latency-hiding scheduler uses futures to
+hide latencies whereas the classic scheduler simply uses a blocking sleep call
+(baseline is the classic scheduler with a single worker thread). The Ideal
+scheduler simply skips any simulated latency and immediately begins computation,
+completely eliminating all latency in the DAG.
 
-A diagram of a (partial) DAG for the distributed map and reduce example is shown
-in figure \ref{fig:map-reduce-dag}. The bolded red lines represent edges in the
-DAG that incur latency of the network request, that is simulated in the benchmark with a simple future
-that suspends for a desired duration. Without latency-hiding, \textit{each} of
-the latency-incurring edges must be incurred by the worker threads, while with
-(perfect) latency-hiding just the cost of the \textit{single} heaviest
-latency-incurring edge on the critical path is incurred.
+The MapReduceFib benchmark speedup results of ProWS-R and the classic scheduler,
+compared to the baseline, are shown in figure \ref{fig:map_reduce_plots}.
+Simulated latencies of 1, 50, and 100 milliseconds were used. As can be seen,
+ProWS-R indeed manages to hide latency and achieve speedups very close to Ideal.
+Naturally, the benefit of latency-hiding when the latency is very short (1
+millisecond) is minimal compared to when the latency is significant (50, 100
+milliseconds). With a latency of 1 millisecond, the total amount of latency in
+the computation is not considerable when compared to the total amount
+of computational work \(T_1\). Consequently the difference in speedups are not
+as drastic. When the latencies are increased to 50 and 100 milliseconds, the
+benefits of latency-hiding truly start to show. ProWS-R exhibits superlinear
+\footnote{Superlinear speedup is defined as a speedup \textit{greater} than
+    \(P\) when running on \(P\) processors \cite{ristov_superlinear_2016}. This
+    appears to contradict the work law defined in section
+    \ref{subsection:analysis_of_parallel_computations}, but is explained by the
+fact that the classic scheduler incurs \textit{all} latency costs in \(T_1\),
+while the latency-hiding scheduler incurs only the latency cost in the critical
+path \(T_\infty\).} speedups: reaching up to 297\(\times\) and 517\(\times\) for
+50 and 100 milliseconds, respectively. This is compared to 35\(\times\) for both
+latencies using the classic scheduler.
 
-\begin{figure}[ht]
-    \centering
-    \includegraphics[width=0.6\textwidth]{figures/map-reduce.png}
-    \caption{A partial DAG for map and reduce}
-    \label{fig:map-reduce-dag}
-\end{figure}
+ProWS-R displaying larger speedups as latency values increase confirms that the
+scheduler is indeed effective at hiding latency: while the classic scheduler
+must incur the latency penalty on each latency-incurring edge, ProWS-R needs
+only incur such a cost once, for the longest latency-incurring on the critical
+path. Thus, the more latency in a DAG, the more the classic scheduler suffers,
+while ProWS-R is unaffected (except for the cost of the critical path of
+course).
+
+Another interesting thing to note is the effect of hyperthreading
+\footnote{Hyperthreading is Intel's proprietary implementation of hardware-level
+threading}. When the number of worker threads starts to exceed the number of
+physical cores, two worker threads may be running on the same physical core, but
+in separate hyperthreads. Once this boundary is crossed, speedups of the
+latency-hiding schedulers (both ProWS-R and Ideal) begin to degrade. This is
+presumably due to worker threads on the same physical core contending for the
+same physical processor execution units, as by hiding latency they can focus
+instead on computational work in the DAG. The classic scheduler with a latency
+of 1 millisecond suffers the same fate. With longer latency values, the classic
+scheduler sees a perfect linear speedup regardless of using more worker threads
+than physical cores, since when incurring latency the worker threads become I/O
+bound (primarily waiting around doing nothing), and the hyperthreads are no
+longer in contention. When using latency-hiding schedulers, or for that matter
+any work-stealing implementation running primarily compute-bound workloads,
+setting the number of worker threads \(P\) to be the number of physical
+processors appears to be the best choice to maximize performance.
 
 \begin{figure}[ht]
     \centering
     \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_1.png}
     \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_50.png}
     \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_100.png}
+    \caption{MapReduceFib benchmark results with varying latencies}
+    \label{fig:map_reduce_plots}
 \end{figure}
 
 \section{Compute vs I/O Bound Workloads}
@@ -1773,6 +1835,9 @@ latency-incurring edge on the critical path is incurred.
 
 \section{Insights and Limitations}
 \label{section:insights_and_limitations}
+
+TODO: move concurrency difficulties here, talk about pinning, stack overflow,
+tied to async-io
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
