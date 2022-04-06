@@ -182,11 +182,11 @@ latency-hiding.
 
 Futures in Rust, unlike the hand-written futures used in Cilk-L, are easily
 composable: the compiler automatically generates a state machine that represents
-the current state of an asynchronous operation. This allows for ergonomic user
-defined asynchronous operations that highly resemble regular sequential code and
-powerful future combinators \cite{noauthor_futuresfuture_nodate}. Supporting
-this behavior requires a few additional capabilities than what ProWS provides
-directly.
+the current state of an asynchronous operation. This allows for ergonomic
+user-defined asynchronous operations that highly resemble regular sequential
+code, and powerful future combinators \cite{noauthor_futuresfuture_nodate}.
+Supporting this behavior requires a few additional capabilities than what ProWS
+provides directly.
 
 \section{Aims}
 
@@ -1648,6 +1648,29 @@ list:
 \end{itemize}
 
 \section{Implementation Challenges: Concurrent Programming is Hard}
+
+Undoubtedly, the experience of implementing Rayon-LH was quite challenging.
+The difficulties faced in this project largely stem from the inherent issue that
+concurrent programming is simply hard to wrap ones mind around. The intractable
+number of thread interleavings and possible flows of execution make for a rather
+miserable programming experience, if one does not take proactive caution and
+combative measures. Even trickier phenomenons like atomic operations and memory
+orderings only add to the pain.
+
+A stark consequence of the non-determinism of concurrent programming is that
+debugging becomes even more complicated. Many heisengbugs \footnote{A bug that
+disappears after trying to study it, particularly by running it in a debugger.}
+were encountered in the process of the implementation, and other bugs only
+showed their face after many thousands of program executions or when running
+into pathological input cases. To aid buggy-implementation diagnosis, heavy use
+of the logging system that Rayon-LH inherits from Rayon was made. While far from
+a panacea to the undying wish of the hardware to spite the implementation
+running on it, the logger output was instrumental to piecing together a
+narrative of why or why not the scheduler was performing certain operations and
+not others. Much like a detective investigating forensic evidence at a crime
+scene, the interleaved lines of thread logger output provided many clues when
+debugging Rayon-LH. Unfortunately, concurrent programming is far from
+``elementary, my dear Watson''.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
