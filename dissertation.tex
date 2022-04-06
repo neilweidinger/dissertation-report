@@ -4,7 +4,9 @@
 \usepackage{amsmath}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+% https://qiita.com/sff1019/items/cb8cae96a1f7026656fc to get minted working with vimtex
 \usepackage{minted}
+\usemintedstyle{manni}
 \usepackage[bookmarks=true]{hyperref}
 \hypersetup{
     colorlinks=true,
@@ -806,9 +808,9 @@ resource utilization, it's undesirable for worker threads to perform any
 operations that are not directly related to executing work nodes (contributes to
 scheduler overhead). As such, the callback is responsible for executing when
 completion of a blocked future is detected, and rescheduling the future node for
-execution by a worker thread. More concrete reasoning and explanation of how
-this occurs in practice is given in section
-\ref{section:i/o_dispatch_and_processing}.
+execution by a worker thread. A more concrete reasoning and explanation of how
+this occurs is given in section
+\ref{section:required_runtime_support_for_latency_hiding}.
 
 Due to the way Rust futures implement their completion signaling mechanism using
 wakers (introduced in section \ref{subsection:futures_in_rust}), it is possible
@@ -1029,9 +1031,10 @@ is undesirable for any of the \(P\) worker threads to be doing anything except
 for executing nodes. Anything that a worker thread does outside of this only
 contributes to scheduler overhead. To avoid placing the burden of processing
 latency-incurring operations on a worker thread, the ProWS-R runtime uses an
-additional thread, named the I/O thread, dedicated solely to this task. This
-relieves the worker threads of having to sacrifice time that could otherwise
-have been spent executing work.
+additional thread, named the I/O thread, dedicated solely to this task
+\footnote{The I/O thread capability is provided by the async-io crate
+\cite{noauthor_async-io_2022}}. This relieves the worker threads of having to
+sacrifice time that could otherwise have been spent executing work.
 
 Naturally, at first glance this may seem to bring little benefit, as introducing
 an additional thread simply means that now hardware resource usage needs to be
@@ -1076,6 +1079,7 @@ polling: too often and processor usage would be excessive; not often enough and
 resumable futures might not be made available quickly enough.
 
 \subsection{Event Queues}
+\label{subsection:event_queues}
 
 To avoid these issues, this functionality is instead achieved by relying on the
 underlying operating system event queue: epoll on Linux, kqueue on BSD systems,
@@ -1230,6 +1234,7 @@ thread sleep/notification mechanism based on atomic latches and counters, an
 overview can be found in \cite{noauthor_rayon-sleep_2022}.}.
 
 \subsubsection*{Deques}
+\label{subsubsection:deque_component}
 
 Deques are work-stealing double-ended queues that support the concurrent
 operations described in section \ref{subsubsection:deques}. A Deque contains
@@ -1250,29 +1255,28 @@ provided by the Crossbeam crate \cite{noauthor_crossbeam_2022}.
 A key thing to note though, is that the Crossbeam deque implementation actually
 provides two handles to the underlying deque: a \texttt{Worker} and a
 \texttt{Stealer}. A \texttt{Worker} handle allows pushing and popping to the
-bottom of the deque, and only one such handle may be created (and is
+bottom of the deque, and only one such handle may be created (since it is
 \textbf{not} thread-safe). A \texttt{Stealer} handle allows only stealing from
-the top of the deque, but multiple may be created. This has implications for
-Rayon-LH, as this means multiple \texttt{Stealer}s to the same deque can be
-created and used concurrently by different worker threads in a thread-safe
-manner throughout the program, but only a single \texttt{Worker} (giving access
-to the bottom of a deque) may be in use by a single thread at a time (note that
-it can still be \textit{sent} to other threads, just may not be used
-concurrently).
+the top of the deque, but multiple may be created (and \textbf{is} thread-safe).
+This has implications for Rayon-LH, as this means multiple \texttt{Stealer}s to
+the same deque can be created and used by different worker threads in a
+thread-safe manner throughout the program, but only a single \texttt{Worker}
+(giving access to the bottom of a deque) may be in use by a single thread at a
+time (note that it can still be \textit{sent} to other threads, just may not be
+used concurrently).
 
 As such, a Deque struct is more specifically a wrapper around a \texttt{Worker}:
-only a single thread may access and use a Deque struct at a time. Rayon-LH takes
-\textbf{very} special care to only use a Deque struct on a single thread at a
-time \footnote{Those more experienced with Rust may point out that the
-    \texttt{Send} and \texttt{Sync} traits should address these issues:
-    unfortunately since \texttt{Worker}s are \texttt{Send} but not
-    \texttt{Sync}, there are many places that the compiler will not allow Deque
-    structs to be used, as it falsely presumes Deques will want to be used
-    concurrently. Since Rayon-LH takes care to only ever use Deques in a
-    non-concurrent manner (by only passing around ownership, and never creating
-references), an \texttt{unsafe impl Sync} is provided for Deques to resolve
-this.}: this is achieved by relying on Rust's ownership system (destructive
-moves) and never creating references to a Deque or anything within it.
+only a single thread may access and use a Deque struct at a time \footnote{Those
+    more experienced with Rust may point out that the \texttt{Send} and
+    \texttt{Sync} traits should address these issues: unfortunately since
+    \texttt{Worker}s are \texttt{Send} but not \texttt{Sync}, there are many
+    places that the compiler will not allow Deque structs to be used, as it
+    falsely presumes Deques will want to be used concurrently. Since Rayon-LH
+takes care to only ever use Deques in a non-concurrent manner (by only passing
+around ownership, and never creating references), an \texttt{unsafe impl Sync}
+is provided for Deques to resolve this.}. Rayon-LH takes very special care to
+achieve this: by relying on Rust's ownership system (destructive moves) and
+never creating references to a Deque or anything within it.
 
 \subsubsection*{StealableSets}
 
@@ -1299,7 +1303,8 @@ a constant time \texttt{remove} operation: the index of the desired deque ID to
 be removed from the set is looked up in the hash map, the Deque ID in the array
 at that index overwritten with the Deque ID at the end of the array, the array
 truncated by one, and the hash map indices updated/removed. All operations are
-guarded by a lock to support concurrent operation.
+guarded by a lock to support concurrent operation. TODO: should I remove all
+this fluff on implementation detail
 
 \subsubsection*{The Stealables Struct}
 
@@ -1322,11 +1327,11 @@ unit. An atomic sequence of operations can only be performed while a reference
 into the hash map is held. This means if multiple operations to the Stealables
 mapping in one atomic unit is required (which ProWS-R frequently does), very
 special care must be taken to not drop the reference into the mapping while the
-operations are being performed. Figuring out which operations must be performed
-as an atomic unit was also not trivial.}. Abstracting over the stealable sets is
-necessary, since modifications to stealable sets naturally modify scheduler
-state, so the Stealables mapping must always be updated to reflect these
-changes.
+operations are being performed. Figuring out which sequence of operations must
+be performed as an atomic unit was also not trivial.}. Abstracting over the
+stealable sets is necessary, since modifications to stealable sets naturally
+modify scheduler state, so the Stealables mapping must always be updated to
+reflect these changes.
 
 \subsubsection*{WorkerThreads}
 
@@ -1336,7 +1341,9 @@ of the \(P\) WorkerThreads contains its respective active Deque, an atomically
 reference-counted pointer to the Registry struct, and an atomically
 reference-counted pointer to the Stealables struct. The \(P\) WorkerThreads run
 the scheduling loop, performing the steal operation (algorithm \ref{alg:steal})
-when necessary, interacting with the various components described above.
+when necessary (with the addition of checking the global Registry
+\texttt{injector} queue if cannot find work in both its local deque or by
+stealing), interacting with the various components described above.
 
 A key thing to note is that WorkerThreads take ownership of their active Deques,
 and as such Deques in the Active state are not found in the Registry
@@ -1371,7 +1378,8 @@ manually create closures \footnote{In this context: functions with captured
     generated structs that contain references or copies to the closure's
     environment, and a method that executes the closure's function using this
 captured environment.} (since the C language itself provides no such feature)
-that are stored on the stacks of worker threads, and \textit{pointers} to these
+that represent work nodes in the computational DAG stored on the respective
+stacks of worker threads where they were created, and \textit{pointers} to these
 closures are stored in the deques that are subsequently popped and stolen to be
 dereferenced and the corresponding closure executed (using calls to
 \texttt{setjmp} and \texttt{longjmp} inserted by the Cilk compiler)
@@ -1380,57 +1388,179 @@ the Cilk implementation.} \cite{frigo_implementation_1998}.
 
 Rust has the fortunate advantage of supporting closures as a built-in language
 feature. This means in Rayon-LH, the role that the Cilk compiler plays in
-creating closures can more or less be performed by the Rust compiler itself.
-Closures are represented by the \texttt{Job} trait \footnote{Traits in Rust are
-similar to interfaces or type classes in other languages.} (shown in   ): anything that
-implements the \texttt{Job} trait can be used as a closure in a Deque.
+creating closures can more or less be performed by the Rust compiler itself,
+lending the language to a library-level work-stealing implementation. While in
+Cilk closures represent work nodes in the DAG, in Rayon-LH work nodes are
+represented by the \texttt{Job} trait \footnote{Traits in Rust are similar to
+interfaces or type classes in other languages.} (shown in figure
+\ref{fig:job_trait}): anything that implements the \texttt{Job} trait (i.e. a
+``Job'') can be used as a node in a Deque.
 
 \begin{figure}[ht]
-  \caption{MIR (simplified)}
-  \label{fig:mir}
-  \begin{minted}[autogobble]{rust}
-    struct Mir {
-        basic_blocks: Vec<BasicBlockData>,
-        // ...
-    }
-
-    struct BasicBlockData {
-        statements: Vec<Statement>,
-        terminator: Terminator,
-        // ...
-    }
-
-    struct Statement {
-        place: Place,
-        rvalue: Rvalue
-    }
-
-    enum Terminator {
-        Goto { target: BasicBlock },
-        If {
-            cond: Operand,
-            targets: [BasicBlock; 2]
-        },
-        // ...
-    }
-  \end{minted}
+    \begin{minted}[autogobble]{rust}
+        trait Job {
+            unsafe fn execute(this: *const Self);
+        }
+    \end{minted}
+    \caption{\texttt{Job} trait (simplified)}
+    \label{fig:job_trait}
 \end{figure}
 
-The primary type of closure in Rayon is represented by the StackJob: a thin
-wrapper around a closure and a corresponding latch (a synchronization primitive)
-that lives on the stack of the WorkerThread that created it. Care must be taken
-by the WorkerThread to not clobber the stack while a StackJob has not yet been
-executed: this is done by the WorkerThread executing the primary scheduling loop
-looking for work to perform while the StackJob latch has not yet been tripped,
-and whatever WorkerThread that executes the StackJob tripping the latch to
-indicate to the original WorkerThread that it is safe to pop the stack frame the
-StackJob lives on.
+Similar to how in Cilk deques store pointers to closures, in Rayon Deques do not
+directly store types that implement the \texttt{Job} trait, but instead
+type-erased \footnote{Type erasure is essentially ad-hoc polymorphism using
+    dynamic dispatch that allows arbitrary concrete types to be used behind a
+single generic (yet also concrete) type-erased type \cite{kilian_c_nodate}.}
+objects to Jobs. This allows arbitrary concrete types that implement the
+\texttt{Job} trait (note the \texttt{this} parameter in \texttt{execute} is a
+pointer type, rather than a concrete type) to be stored in Deques as a single
+homogeneous type-erased Job type. This type-erased type is the \texttt{JobRef}
+struct (basically two pointers), shown in figure \ref{fig:job_ref}, and is what
+is stored in Deques. The \texttt{pointer} field is a pointer to the captured
+environment and other metadata, and the \texttt{execute\_fn\_pointer} is a
+function pointer to the concrete implementation of the \texttt{execute} function
+of the concrete type that implements \texttt{Job} \footnote{Readers experienced
+with Rust may recognize this as a hand-rolled trait object. A hand-rolled
+version is used to avoid lifetime quarrels with the Rust borrow checker.}.
+WorkerThreads, when executing the scheduling loop, push, pop, and steal these
+\texttt{JobRef} objects, and execute the work node they represent by calling
+\texttt{execute\_fn\_pointer} and passing in the \texttt{pointer} field.
 
-Similar to how in Cilk deques store pointers to closures, in Rayon Deques store
-not StackJobs directly, but instead type erased objects to Jobs. 
+\begin{figure}[ht]
+    \begin{minted}[autogobble]{rust}
+        #[derive(Copy, Clone)]
+        pub struct JobRef {
+            pointer: *const (),
+            execute_fn_pointer: unsafe fn(*const ()),
+        }
+    \end{minted}
+    \caption{\texttt{JobRef} type (simplified)}
+    \label{fig:job_ref}
+\end{figure}
 
-\section{I/O Dispatch and Processing}
-\label{section:i/o_dispatch_and_processing}
+\subsubsection*{StackJobs}
+
+The primary Job in Rayon is represented by the generic \texttt{StackJob} type,
+shown in figure \ref{fig:stackjob}: a thin wrapper around a Rust closure, a
+location in memory (the stack of the WorkerThread) to deposit the final return
+value of the closure, and a corresponding latch (a synchronization primitive).
+\texttt{StackJob}s, as the name implies, are stored on the stack of the
+WorkerThread that created them. WorkerThreads create and push \texttt{StackJob}s
+to their active Deques (unless the \texttt{StackJob} was created on the program
+main thread, for example the root computation node, in which case it is pushed
+on the global Registry \texttt{injector} queue). The
+\texttt{execute\_fn\_pointer} for \texttt{StackJob}s basically just executes the
+wrapped closure and trips the latch.
+
+\begin{figure}[ht]
+    \begin{minted}[autogobble]{rust}
+        pub struct StackJob<L, F, R>
+        where
+            L: Latch + Sync,
+            F: FnOnce(bool) -> R + Send,
+            R: Send,
+        {
+            latch: L,
+            func: UnsafeCell<F>,
+            result: UnsafeCell<JobResult<R>>,
+        }
+    \end{minted}
+    \caption{\texttt{StackJob} type (simplified)}
+    \label{fig:stackjob}
+\end{figure}
+
+Care must be taken by the WorkerThread to not clobber the stack (since the stack
+stores the closures environment) while a \texttt{StackJob} has not yet been
+executed: this is achieved by the WorkerThread performing the scheduling loop
+looking for Jobs to execute for as long as the \texttt{StackJob} latch has not
+yet been tripped, and whatever WorkerThread that finally executes the
+\texttt{StackJob} tripping the latch to indicate to the original WorkerThread
+that it is now safe to pop the stack frame the \texttt{StackJob} lives on.
+
+As \texttt{StackJob}s are generic (parametric polymorphism resolved at
+compile-time), a unique \texttt{StackJob} type is created for every unique
+function pointer or compiler-generated closure it wraps. This is where the
+type-erased nature of the \texttt{JobRef} struct truly shines: an infinite
+number of concrete \texttt{StackJob} or any other Job type that can provide an
+\texttt{execute} function through the \texttt{Job} trait can be represented
+using a single uniform \texttt{JobRef} type.
+
+\subsubsection*{FutureJobs}
+
+The \texttt{StackJob} type is intended for regular closures: functions that can
+not be suspended/resumed and do not incur latency. To support asynchronous
+operations that represent future nodes in the computational DAG, Rayon-LH uses
+the generic \texttt{FutureJob} type shown in figure \ref{fig:futurejob}. A
+\texttt{FutureJob} is similar to a \texttt{StackJob}, but wraps a Rust Future
+(described in section \ref{subsection:futures_in_rust}) instead of a regular
+Rust closure. Note that a \texttt{FutureJob} is not a Rust future itself, it
+merely wraps such a future.
+
+\begin{figure}[ht]
+    \begin{minted}[autogobble]{rust}
+        pub struct FutureJob<F>
+        where
+            F: Future,
+        {
+            latch: FutureJobLatch,
+            future: UnsafeCell<F>,
+            result: UnsafeCell<JobResult<F::Output>>,
+            waker: UnsafeCell<FutureJobWaker>,
+        }
+    \end{minted}
+    \caption{\texttt{FutureJob} type (simplified)}
+    \label{fig:futurejob}
+\end{figure}
+
+In order to provide the guarantee that a Rust future stay pinned in memory once
+it has first been polled, the API (figure \ref{fig:future_job_api}) to create,
+spawn, and await a \texttt{FutureJob} relies on the Rust \texttt{Pin} type, as
+described in section \ref{subsection:futures_in_rust}. In short, the Rust type
+system statically guarantees that once a \texttt{FutureJob} is spawned, it is
+not moved from its original memory location.
+
+\begin{figure}[ht]
+    \begin{minted}[autogobble]{rust}
+        let future_job = rayon::FutureJob::new(network_request());
+        pin_mut!(future_job); // pin future_job on stack
+        let future_job_handle = future_job.spawn();
+        // ... execute some code in parallel to future_job
+        let result = future_job_handle.await_future_job(); 
+        // Rust's type system ensures that future_job is still
+        // pinned on the stack by the time the future_job
+        // is awaited
+    \end{minted}
+    \caption{\texttt{FutureJob} API, demonstrating pinning on the stack}
+    \label{fig:future_job_api}
+\end{figure}
+
+The primary difference to a \texttt{StackJob} is the addition of a
+\texttt{FutureJobWaker}, and what happens in \texttt{execute\_fn\_pointer}. When
+executing \texttt{execute\_fn\_pointer}, a \texttt{FutureJob} creates a
+\texttt{FutureJobWaker} and polls its wrapped future with it. If the future
+returns \texttt{Poll::Ready} indicating that the future is complete, the final
+return value is simply deposited and the latch is tripped, just like a
+\texttt{StackJob}. Otherwise, if the future returns \texttt{Poll::Pending}
+indicating the future is blocked, lines \ref{line:future_start} -
+\ref{line:future_end} of the scheduling loop are performed: the active Deque of
+the executing WorkerThread is suspended and the resource the future is blocked
+on is registered with the I/O thread event queue (section
+\ref{subsection:event_queues}). The previously active Deque is put back in the
+Registry \texttt{deque\_bench} so that it may have somewhere to live in memory.
+
+At some point in the future when the I/O thread event queue detects the resource
+is ready to be used, the I/O thread is awoken and triggers the
+\texttt{FutureJobWaker}. The \texttt{FutureJobWaker} executes \footnote{Note it
+    is the I/O thread that is executing the callback procedure, not a worker
+thread. This takes care of the issue that the \texttt{Worker} handle to a deque
+is not safe for concurrent use, discussed in section
+\ref{subsubsection:deque_component}.} the callback procedure of algorithm
+\ref{alg:callback}: the \texttt{JobRef} representing the previously blocked
+\texttt{FutureJob} is pushed back on the bottom of the suspended Deque, the
+Deque is transitioned to the Resumable state, and potentially added to a
+StealableSet for a WorkerThread to execute again. This harmonization of
+\texttt{FutureJob}s, the I/O thread, and the \texttt{FutureJobWaker} are what
+provide the latency-hiding capabilities of ProWS-R.
 
 \section{Differences between Rayon and Rayon-LH}
 
@@ -1467,8 +1597,7 @@ shared state is required, not required in Rayon)
 
 \section{Future Work}
 
-\bibliographystyle{plain}
-\bibliography{references}
+\bibliographystyle{plain} \bibliography{references}
 
 %% You can include appendices like this:
 % \appendix
