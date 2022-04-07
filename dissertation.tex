@@ -808,6 +808,53 @@ the scheduling loop begins (line \ref{line:loop}).
 Without the extra logic to deal with futures (lines \ref{line:future_start} -
 \ref{line:future_end}), ProWS-R behaves the same as classic work-stealing.
 
+\begin{algorithm}
+\caption{Main Scheduling Loop ($w$ is the currently executing worker thread)}
+\label{alg:scheduling_loop}
+\begin{algorithmic}[1]
+    \Function{schedulingLoop}{}
+        \While{computation is not done} \label{line:loop}
+            \State $node \gets \text{findNode()}$
+            \State $left, right \gets \text{execute(}node\text{)}$
+            \If{$left \neq \text{null}$}
+                \State $w \text{.active.pushBottom(}left\text{)}$
+            \EndIf
+            \If{$right \neq \text{null}$}
+                \State $w \text{.active.pushBottom(}right\text{)}$
+            \EndIf
+            \If{$node \text{ encountered blocked future } f$}
+            \label{line:future_start} \label{line:blocked_future}
+                \State $deq \gets w \text{.active}$
+                \State $w \text{.active} \gets \text{null}$
+                \State $\text{suspendDeque(}deq\text{)}$
+                \State $f\text{.installCallBack(} deq \text{)}$
+                    \label{line:install_callback}
+            \EndIf \label{line:future_end}
+        \EndWhile
+    \EndFunction
+    \algstore{loop}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Find Node ($w$ is the currently executing worker thread)}
+\label{alg:find_node}
+\begin{algorithmic}[1]
+    \algrestore{loop}
+    \Function{findNode}{}
+        \State $node \gets \text{null}$
+        \If{$w \text{.active} \neq \text{null}$}
+            \State $node \gets w \text{.active.popBottom()}$
+        \EndIf
+        \If{$node = \text{null}$} \label{line:no_work}
+            \State $node \gets \text{steal()}$
+        \EndIf
+        \State $\textbf{return} node$
+    \EndFunction
+    \algstore{findnode}
+\end{algorithmic}
+\end{algorithm}
+
 Worker threads work off the bottom of their active deques. When a node is popped
 from the bottom, it is first executed and then its children (if any) are pushed
 to the bottom of the deque. Special care is taken for when a node that was just
@@ -821,6 +868,22 @@ set, and if it is not empty, adding it to the stealable set of another randomly
 selected worker thread. If the deque is empty, it will not be found in any
 stealable set, so that worker threads can not try to fruitlessly steal from it. 
 
+\begin{algorithm}
+\caption{Deque Suspension ($w$ is the currently executing worker thread)}
+\label{alg:suspend_and_find}
+\begin{algorithmic}[1]
+    \algrestore{findnode}
+    \Function{suspendDeque}{$deq$} \label{line:deque_suspension}
+        \State $deq\text{.state} \gets \textbf{SUSPENDED}$
+        \State $ w \text{.stealableSet.remove(} deq \text{)}$
+        \If{$! deq \text{.isEmpty()}$}
+            \State $ \text{chooseRandomVictim().stealableSet.add(} deq \text{)}$
+        \EndIf
+    \EndFunction
+    \algstore{suspend}
+\end{algorithmic}
+\end{algorithm}
+
 The callback (line \ref{line:callback}) that is installed on the blocked future
 (line \ref{line:install_callback}) is the critical aspect for enabling
 latency-hiding. In order to try and keep worker threads busy with work as much
@@ -832,6 +895,28 @@ completion of a blocked future is detected, and rescheduling the future node for
 execution by a worker thread. A more concrete reasoning and explanation of how
 this occurs is given in section
 \ref{section:required_runtime_support_for_latency_hiding}.
+
+\begin{algorithm}
+\caption{Callback Procedure (called upon completion of the blocked future $f$)}
+\label{alg:callback}
+\begin{algorithmic}[1]
+    \algrestore{suspend}
+    \Function{callBack}{$suspendedDeq$} \label{line:callback}
+        \If{$suspendedDeq \text{.state} \neq \textbf{SUSPENDED} $}
+            \label{line:sus_check}
+            \State \textbf{return}
+        \EndIf
+        \State $suspendedDeq \text{.pushBottom(} f \text{)}$ \Comment $f$ is a node
+            that can be executed
+        \State $suspendedDeq\text{.state} \gets \textbf{RESUMABLE}$
+        \If{$! suspendedDeq \text{.inStealableSet()}$}
+            \State $\text{chooseRandomVictim().stealableSet.add(} suspendedDeq
+                \text{)}$
+        \EndIf
+    \EndFunction
+    \algstore{callback}
+\end{algorithmic}
+\end{algorithm}
 
 Due to the way Rust futures implement their completion signaling mechanism using
 wakers (introduced in section \ref{subsection:futures_in_rust}), it is possible
@@ -884,82 +969,6 @@ none (which is the case when a blocked future is encountered on line
 \ref{line:blocked_future}). If a node could not be stolen, the steal procedure
 is repeated.
 
-The calls to \texttt{rebalanceStealables} on lines \ref{line:rebalance_1} and
-\ref{line:rebalance_2} are to balance the load of stealable deques among the
-worker thread stealable sets. This is done so that the chance of selecting a
-stealable deque given a victim worker thread stays uniform. This is performed
-when a deque has been removed from a worker thread \(v\)'s stealable set - it
-randomly chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is
-done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
-\(v^\prime\) has one.
-
-\begin{algorithm}
-\caption{Main Scheduling Loop ($w$ is the currently executing worker thread)}
-\label{alg:scheduling_loop}
-\begin{algorithmic}[1]
-    \Function{schedulingLoop}{}
-        \While{computation is not done} \label{line:loop}
-            \State $node \gets \text{findNode()}$
-            \State $left, right \gets \text{execute(}node\text{)}$
-            \If{$left \neq \text{null}$}
-                \State $w \text{.active.pushBottom(}left\text{)}$
-            \EndIf
-            \If{$right \neq \text{null}$}
-                \State $w \text{.active.pushBottom(}right\text{)}$
-            \EndIf
-            \If{$node \text{ encountered blocked future } f$}
-            \label{line:future_start} \label{line:blocked_future}
-                \State $deq \gets w \text{.active}$
-                \State $w \text{.active} \gets \text{null}$
-                \State $\text{suspendDeque(}deq\text{)}$
-                \State $f\text{.installCallBack(} deq \text{)}$
-                    \label{line:install_callback}
-            \EndIf \label{line:future_end}
-        \EndWhile
-    \EndFunction
-    \Function{suspendDeque}{$deq$} \label{line:deque_suspension}
-        \State $deq\text{.state} \gets \textbf{SUSPENDED}$
-        \State $ w \text{.stealableSet.remove(} deq \text{)}$
-        \If{$! deq \text{.isEmpty()}$}
-            \State $ \text{chooseRandomVictim().stealableSet.add(} deq \text{)}$
-        \EndIf
-    \EndFunction
-    \Function{findNode}{}
-        \State $node \gets \text{null}$
-        \If{$w \text{.active} \neq \text{null}$}
-            \State $node \gets w \text{.active.popBottom()}$
-        \EndIf
-        \If{$node = \text{null}$} \label{line:no_work}
-            \State $node \gets \text{steal()}$
-        \EndIf
-        \State $\textbf{return } node$
-    \EndFunction
-    \algstore{loop}
-\end{algorithmic}
-\end{algorithm}
-
-\begin{algorithm}
-\caption{Callback Procedure (called upon completion of the blocked future $f$)}
-\label{alg:callback}
-\begin{algorithmic}[1]
-    \algrestore{loop}
-    \Function{callBack}{$suspendedDeq$} \label{line:callback}
-        \If{$suspendedDeq \text{.state} \neq \textbf{SUSPENDED} $}
-            \label{line:sus_check}
-            \State \textbf{return}
-        \EndIf
-        \State $suspendedDeq \text{.pushBottom(} f \text{)}$ \Comment $f$ is a node
-            that can be executed
-        \State $suspendedDeq\text{.state} \gets \textbf{RESUMABLE}$
-        \If{$! suspendedDeq \text{.inStealableSet()}$}
-            \State $\text{chooseRandomVictim().stealableSet.add(} suspendedDeq
-                \text{)}$
-        \EndIf
-    \EndFunction
-    \algstore{callback}
-\end{algorithmic}
-\end{algorithm}
-
 \begin{algorithm}
 \caption{Steal Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
 \begin{algorithmic}[1]
@@ -992,6 +1001,23 @@ done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
             \EndIf
         \EndWhile
     \EndFunction
+    \algstore{steal}
+\end{algorithmic}
+\end{algorithm}
+
+The calls to \texttt{rebalanceStealables} on lines \ref{line:rebalance_1} and
+\ref{line:rebalance_2} are to balance the load of stealable deques among the
+worker thread stealable sets. This is done so that the chance of selecting a
+stealable deque given a victim worker thread stays uniform. This is performed
+when a deque has been removed from a worker thread \(v\)'s stealable set - it
+randomly chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is
+done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
+\(v^\prime\) has one.
+
+\begin{algorithm}
+\caption{Set to Active Deque Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
+\begin{algorithmic}[1]
+    \algrestore{steal}
     \Function{setToActive}{$victim, victimDeque$}
         \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
         \State $ w \text{.stealableSet.add(} victimDeque \text{)} $
@@ -1598,7 +1624,7 @@ provide the latency-hiding capabilities of ProWS-R.
 
 Although Rayon-LH builds upon much of the existing Rayon infrastructure, much of
 it needed to be heavily modified and new infrastructure added to support
-ProWS-R. While the overarching philosophy of representing work nodes as
+ProWS-R. While the overarching approach of representing work nodes as
 \texttt{JobRef}s stored in Deques that are worked on by WorkerThreads is the
 same, every single component outlined in section
 \ref{section:rayon-lh_architecture_overview} had to be overhauled or added (the
@@ -1624,7 +1650,7 @@ frequent use of the Stealables mapping (section
 taken to ensure concurrency correctness. Rayon, while it does also have
 its share of hair-raising concurrency traps for things like thread sleeping and
 notification (that Rayon-LH also inherits), has no need for WorkerThreads to
-interact with a Stealables-like component.
+interact with a shared Stealables-like component.
 
 \section{Pitfalls}
 \label{section:pitfalls}
@@ -1671,9 +1697,9 @@ list:
         \item An example of this is in the steal procedure: two WorkerThreads
             may randomly select the same victim Deque in the Muggable state, but
             only one will succeed in mugging it. The other WorkerThread must
-            realize its desired deque has been disappeared before it got to it,
-            take care not to mistakenly corrupt state, and finally retry the
-            steal procedure.
+            realize its desired deque has disappeared before it got to it, take
+            care not to mistakenly corrupt state, and finally retry the steal
+            procedure.
     \end{itemize}
 \end{itemize}
 
@@ -1754,7 +1780,7 @@ does not have much of an impact on the benchmark results.
 The distributed map and reduce program is a classic divide-and-conquer operation
 that maps a function \(f(x)\) over a large set of \(n\) values, and reduces the
 resulting values with an associative binary operation \(g(x,y)\). An identity
-function \(id\) is used for cases where a reduction with only one operation must
+function \(id\) is used for cases where a reduction with only one operand must
 be performed. To simulate a real-world use case, each of the \(n\) values is
 assumed to be stored on a remote server and must be requested, which incurs
 latency.
@@ -1765,11 +1791,12 @@ naive recursive parallel (with a serial base case) Fibonacci algorithm and
 used: there are \(n = 5000\) ``remote'' connections, the \(n\) values
 ``retrieved'' over the network is the number 30 (to compute the 30th Fibonacci
 number), the serial base case is 25, and the modulo divisor is 1,000,000,000. In
-the MapReduceFib benchmark, the ProWS-R latency-hiding scheduler uses futures to
-hide latencies whereas the classic scheduler simply uses a blocking sleep call
-(baseline is the classic scheduler with a single worker thread). The Ideal
-scheduler simply skips any simulated latency and immediately begins computation,
-completely eliminating all latency in the DAG.
+the MapReduceFib benchmark, the ProWS-R latency-hiding scheduler uses futures
+that suspend for a given duration to hide latencies whereas the classic
+scheduler simply uses a blocking sleep call (baseline is the classic scheduler
+with a single worker thread). The Ideal scheduler simply skips any simulated
+latency and immediately begins computation, completely eliminating all latency
+in the DAG.
 
 The MapReduceFib benchmark speedup results of ProWS-R and the classic scheduler,
 compared to the baseline, are shown in figure \ref{fig:map_reduce_plots}.
@@ -1830,8 +1857,53 @@ processors appears to be the best choice to maximize performance.
 \section{Compute vs I/O Bound Workloads}
 \label{section:compute_vs_i/o_bound_workloads}
 
+This section seeks to answer the question of varying the ratio of compute vs I/O
+bound operations in the workload. Whereas section
+\ref{section:latency-hiding_efficiency} is concerned about the effects of
+\textit{injecting} latency by keeping \(T_1\) constant and only varying the
+amount of latency \(T_\text{latency}\), this section is interested in what
+happens when the \textit{sum} of total work and latency \(T_1 +
+T_\text{latency}\) is held constant but the individual parameters adjusted. In
+other words, how does ProWS-R perform under workloads of varying natures?
+
+This parameter sweep benchmark runs the naive recursive parallel Fibonacci
+computation with a serial base case of zero, with the number of worker threads
+set to the number of physical cores. When the computation hits the Fibonacci
+base case (the leaf nodes in the computation DAG), it incurs latency by either
+performing a blocking sleep to simulate a compute bound operation (a compute
+bound operation \textit{must} take up processor cycles, there is no hiding
+possible) or uses a future that suspends for the equivalent duration (but this
+latency can be hidden). The percentage of I/O bound nodes in the workload
+dictate whether the blocking sleep call or future will be used.
+
+A plot showing the parameter sweep benchmark results is shown in figure
+\ref{fig:param_sweep}. As expected, the greatest speedups come from when the
+workload consists of a high percentage of I/O bound nodes. Speedup is also
+increased when longer latency values are used, but not to the extent that the
+I/O bound node percentage does. Essentially, when there is an abundance of
+latency-hiding operations, the classic scheduler suffers tremendously as it must
+bears the cost of each individual latency penalty, while ProWS-R can efficiently
+hide this.
+
+From this it is clear that the workloads that will benefit most from
+latency-hiding are ones with a high percentage of latency-incurring operations,
+and compute-bound workloads benefit less. Fortunately, in all cases, even when
+the workload is purely compute-bound, ProWS-R performs better or equal to
+classic work-stealing (a benchmark dedicated to compute-bound comparison is
+discussed in section \ref{section:rayon-lh_scheduler_overhead}).
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/param_sweep_plot.png}
+    \caption{Parameter sweep benchmark results}
+    \label{fig:param_sweep}
+\end{figure}
+
 \section{Rayon-LH Scheduler Overhead}
 \label{section:rayon-lh_scheduler_overhead}
+
+While latency-hiding capabilities are great, it would be less than ideal if this
+came at the cost of sacrificing performance on regular compute-bound workloads.
 
 \section{Insights and Limitations}
 \label{section:insights_and_limitations}
