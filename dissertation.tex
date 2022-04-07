@@ -4,6 +4,7 @@
 \usepackage{amsmath}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{wrapfig}
 % https://qiita.com/sff1019/items/cb8cae96a1f7026656fc to get minted working with vimtex
 \usepackage{minted}
 \usemintedstyle{manni}
@@ -72,7 +73,7 @@ the report is provided.
 
 Exploiting the parallel nature of modern processors is critical to achieving
 high performance. In an era where even entry-level consumer tier hardware
-features-shared memory parallelism, the need for software to be written that
+features multicore processors, the need for software to be written that
 makes efficient use of these resources is key to unlocking efficiency gains.
 Unfortunately, the difficulty involved with the writing of parallel programs by
 explicitly specifying which computations should map to which processor is
@@ -80,6 +81,13 @@ non-trivial and prone to introducing errors. Programmers need to manually
 schedule computations and enforce synchronization using low-level primitives
 such as locks and atomic operations, that are highly vulnerable to subtle and
 non-deterministic errors like race conditions and deadlocking.
+
+An example of an operation that is amenable to parallelization is sorting: the
+divide-and-conquer nature of various sorting algorithms lend themselves very
+well to splitting workloads across multiple processor cores to reduce execution
+time. Manually, however, splitting and delegating recursive sub-arrays to sort
+on multiple processor cores and synchronizing the results is not ideal, and a
+higher-level abstraction is desirable.
 
 This backdrop of the need to embrace parallelism has spurred the advancement of
 significant research and development in programming languages and paradigms to
@@ -141,9 +149,10 @@ preempting the operation, and allowing another task that could be performing
 useful work to run instead. This allows the latency-incurring operation to wait
 out its latency in the background even while all hardware resources are being
 fully utilized on other tasks, thus \textbf{\textit{hiding}} the latency. Singer
-et. al \cite{singer_proactive_2019}, introduce a latency-hiding work-stealing
+et al. \cite{singer_proactive_2019}, introduce a latency-hiding work-stealing
 scheduling algorithm, \textit{\textbf{ProWS}}, that utilizes
-\textbf{\textit{futures}} (a parallel language construct
+\textbf{\textit{futures}} (a parallel language construct used to represent
+computations that will resolve at some point in the \textit{future}
 \cite{halstead_implementation_1984, halstead_multilisp_1985}) to represent and
 schedule latency-incurring operations. Futures can be \textbf{\textit{spawned}}
 to begin parallel execution, and return a handle future handle that can be
@@ -159,7 +168,7 @@ latency-hiding work-stealing: a runtime system to efficiently dispatch and
 process latency-incurring operations is also necessary. The use of futures to
 hide latency is not much help if worker threads themselves must incur the cost
 of awaiting futures; dedicated I/O threads and integration with operating system
-event notification facilities is required. Singer et. al
+event notification facilities is required. Singer et al.
 \cite{singer_scheduling_2019} present an extension of Cilk, called Cilk-L, that
 incorporates such runtime support with encouraging results.
 
@@ -191,7 +200,7 @@ provides directly.
 \section{Aims}
 
 The aim of this project is to provide an implementation, building heavily upon
-the work of Singer et. al, of latency-hiding work-stealing that seamlessly
+the work of Singer et al., of latency-hiding work-stealing that seamlessly
 integrates with the Rust language and ecosystem.
 
 This report describes the
@@ -223,7 +232,7 @@ The explicit goals of this project are as follows:
 
 \chapter{Background: What Andy Giveth, Bill Taketh}
 
-Describe and outline background chapter.
+This chapter provides an introduction to TODO
 
 \section{Modern Computer Architecture}
 
@@ -264,11 +273,11 @@ multicore era was born.
 
 While the doubling of transistor count observation of Moore's law is still going
 strong, the historic predictable free performance lunch it became associated
-with is no longer what is once was. Instead of being dedicated to more complex
-architectural features in order to extract sequential performance on single core
-processors, the extra transistors are largely used to build more cores on a
-single processor. With diminishing returns on effort spent increasing single
-core performance, chip designers look to add multiple cores to be able to
+with is no longer what it once was. Instead of being dedicated to more complex
+architectural features, in order to extract serial performance on single core
+processors, the extra transistors are largely used to build more \textit{cores}
+on a single processor. With diminishing returns on effort spent increasing
+single core performance, chip designers look to add multiple cores to be able to
 execute more instructions in parallel \cite{patterson_trouble_2010}.
 
 CPU performance can be described using the following equation
@@ -280,22 +289,17 @@ absolute execution time: \[ \text{CPU execution time for a program} =
 where CPI is average clock cycles per instruction. No longer able to increase
 the clock frequency due to the power wall and increasing difficulty reducing
 CPI, efforts of hardware architects focused on simply reducing program
-instruction count per processor, by distributing instructions across multiple
+instruction count per processor: by distributing instructions across multiple
 CPU cores to be executed in parallel \cite{etiemble_45-year_2018}.
 
 Multicore processors are microprocessors containing multiple processors in a
 single integrated circuit, where each of these processors is known as a core.
-Almost all commodity multicore processors today are \textit{symmetric
-multiprocessing (SMP)} systems, meaning all cores in a processor share the same
-physical address space. A single physical address space allows cores to operate
-on shared data.
-
-Armed with multiple cores, different programs or different parts
-of the same program can be run at the same time in parallel, reducing the time
-required to perform the same amount of work on a single processor, boosting
-performance. No longer limited to a single processor core executing work,
-programs stand to drastically benefit in execution throughput by being run on
-multiple cores simultaneously.
+Armed with multiple cores, different programs or different parts of the same
+program can be run at the same time in parallel, reducing the time required to
+perform the same amount of work on a single processor, boosting performance. No
+longer limited to a single processor core executing work, programs stand to
+drastically benefit in execution throughput by being run on multiple cores
+simultaneously.
 
 As of 2021, it is difficult to find a processor that is not a multicore
 processor. The performance gains provided by having multiple cores have shown to
@@ -307,9 +311,12 @@ single-board computers, features a 64-bit quad-core Arm Cortex-A53 CPU
 Initially, multicore processors may seem like a silver bullet to the question of
 what to do when faced with the power wall: for more performance, simply scale
 the number of cores! In reality, as is typical, the situation is more nuanced.
-Many workloads cannot be trivially diced up and processed on multiple cores, and
-even if so, support for splitting up work and then computing this work in
-parallel must be explicitly supported and designed for.
+Many workloads cannot be trivially diced up and processed on multiple cores
+\footnote{This is due to Amdahl's law, that provides an upper bound to the
+potential speedup a program can benefit from running on more cores
+\cite{bryant_computer_2016}.}, and even if so, support for splitting up work and
+then computing this work in parallel must be explicitly supported and designed
+for.
 
 \subsection{Parallel Computing and its Difficulties}
 \label{section:parallel_computing}
@@ -319,255 +326,228 @@ performance benefits, there is one catch: programmers must write explicitly
 parallel programs. Software must be carefully designed such that it actually
 takes advantage of multiple processing units: a single-threaded application
 running on an 8 core CPU can only take advantage of 1/8 of such a chips
-potential throughput. Worst of all, after about nearly two decades of experience
-since the introduction of the first multicore processors, experience has shown
-that compared to traditional sequential programming, parallel programming is
-simply very difficult \cite{creeger_multicore_2005, lee_problem_2006,
-patterson_trouble_2010}.
+potential throughput. Once CPU hardware started featuring multiple cores,
+programs did not magically rewrite themselves to take advantage of this
+increased firepower. Instead, developers had to manually identify the existing
+parallelism in their programs and refactor them to run as multiple computational
+threads \cite{patterson_trouble_2010}.
 
-\begin{itemize}
-    % TODO
-    \item There are many things a programmer must be aware of when writing
-        parallel programs (\textbf{CONDENSE})
-    \begin{itemize}
-        \item Synchronization of memory accesses
-        \item Synchronization of control flow
-        \item Memory ordering
-        \item Race conditions
-        \item Deadlocks/livelocks
-        \item Lock-free programming and atomic operations
-        \item Workload partitioning
-        \item Workload balancing
-        \item Scheduling
-    \end{itemize}
-\end{itemize}
-
-Before the introduction of mainstream multicore processors, code was written
-with the intention of being executed in serial on a single core processor. Once
-CPU hardware started featuring multiple cores, programs did not magically
-rewrite themselves to take advantage of this increased firepower. Instead,
-developers had to manually identify the existing parallelism in their programs
-and refactor them to run as multiple computational threads
-\cite{patterson_trouble_2010}.
-
-Threads are an abstraction of units of scheduling and execution: the same
+Threads are the unit of scheduling and execution: the same
 program can have multiple threads of execution running concurrently. A
-\textit{\textbf{thread scheduler}} manages these threads \footnote{Typical thread
-    schedulers however have no knowledge of the thread workloads; all threads
-    are opaque to the scheduler: the scheduler does not know whether a given
-    thread has operations that must complete before operations in another
-    thread, the scheduler simply chooses a thread to run according to its
-scheduling algorithm (that typically tries to schedule all threads
-fairly/evenly) and it is up to the programmer to explicitly program this thread
-synchronization.} and chooses when they should run on the CPU. Multicore
-processors allow threads to truly run in parallel, instead of just concurrently
-as would happen on a single core processor, as multiple cores can each be
-executing a thread simultaneously.
+\textit{\textbf{thread scheduler}} manages these threads and chooses when they
+should run on the CPU. Multicore processors allow threads to truly run in
+parallel, instead of just concurrently as would happen on a single core
+processor, since multiple cores can each be executing a thread simultaneously
+\footnote{Sequential means operations must happen in a defined sequence, while
+    concurrent means there is no sequence and operations can occur in any order.
+    Serial execution means one-at-a-time, while parallel execution means
+    multiple operations happening \textit{at the same time}. Sequential vs
+concurrent and serial vs parallel are two orthogonal axes. Concurrency does not
+imply parallelism, although it is a prerequisite for it.}.
 
-Threads are the most common approach to concurrent programming and by extension
-parallel programming, but are notoriously difficult to use efficiently and
-and ensure correctness with \cite{lee_problem_2006}.
+Unfortunately, after about nearly two decades since the introduction of the
+first multicore processors, experience has shown that compared to traditional
+sequential programming, parallel programming is simply very difficult
+\cite{creeger_multicore_2005, lee_problem_2006, patterson_trouble_2010}. There
+are many things a programmer must be aware of when writing parallel programs:
+synchronization of memory accesses and control flow, race conditions,
+deadlocks and livelocks, lock-free programming and atomic operations, memory
+models, workload partitioning, balancing, and scheduling, and many more. These
+are all issues that stem from the intrinsic difficulty of coordinating multiple
+independent entities that access shared resources (TODO: think of ...).
 
-Other approaches to parallel computing, for example network connected cluster
-based designs frequently found in the high performance computing (HPC) domain,
-will not be discussed in this report, although the ideas described could
-possibly be transferable.
+\section{Classic Work-Stealing}
 
-Not only does software need to be written with the above concepts in mind, there
-is an inherent limit to how much a given program can even take advantage of the
-parallelism offered by multiple processors. Not all program can benefit from
-being run in parallel, and those that do have their maximum theoretical speedups
-capped by Amdahl's Law.
+To combat the previously mentioned issues, work-stealing schedulers are
+frequently used, as they allow programmers to express the \textit{logical}
+parallelism of their programs, letting the underlying work-stealing scheduler
+deal with the complexities of workload balancing and thread scheduling. This
+section provides a brief introduction to the theoretical tools used to analyze
+multithreaded computations as well as classic work-stealing.
 
-% TODO
-\subsection{Amdahl's Law (REMOVE)}
+\subsection{Why Steal Work?}
 
-Amdahl's law provides an upper bound to the potential speedup a program can
-benefit from when the performance of a portion of the program is improved, and
-is often used in parallel computing to predict the maximum theoretical speedup
-when using multiple processors. A program that required \(T_\text{old}\) time to
-execute that now has a fraction \(\alpha\) of it running in parallel on \(k\)
-processors has a theoretical speedup \(S = T_\text{old} / T_\text{new}\) of \[ S
-= \frac{1}{(1 - \alpha) + \alpha / k} \]
+To first illustrate why work-stealing is beneficial, it's useful to consider an
+example even the beginner programmer will be familiar with: sorting. Sorting
+algorithms commonly come in the form of divide-and-conquer algorithms:
+recursively breaking down a problem into non-overlapping sub-problems, until
+these become simple enough to solve directly, at which point these intermediate
+solutions to sub-problems are combined to give a solution to the original
+problem.
 
-A derivation can be found in \cite{bryant_computer_2016}. If we consider setting
-\(k\) to \(\infty\), we can see the maximum possible speedup \(S_\infty\) of a
-program running on an infinite number of processors is \(1 / (1 - \alpha)\). The
-major insight of Amdahl's law is that to speed up the entire program, the speed
-of a very large fraction of the program must be significantly improved, and even
-then there is an upper bound on the possible speedup that can be achieved. In
-other words, a program that wishes to take advantage of being run in parallel
-must exhibit an ample amount of parallelism (fraction of the program that can be
-run in parallel) to demonstrate an advantage when compared to running on a
-single processor.
+Take the quicksort algorithm, for example. It works by partitioning a given
+array into two sub-arrays, and the sub-arrays are then solved recursively. For
+each level in the recursive call graph, the two sub-problems are solved
+completely independently of each other (they have no knowledge of the other).
 
-\section{Classical work stealing}
+After partitioning the original array, why continue solving two independent
+sub-problems on the same processor core? Instead, one sub-problem could be
+solved by one core, with the other being handed to another core to solve. Since
+the sub-problems are completely independent, execution time can instantly be
+slashed in half. In fact, why stop there? For the remaining recursive
+sub-problems, keep handing them out to other cores to solve, and bask in the
+sweet exponentially increasing speedup.
 
-\subsection{Motivating Examples}
+Unfortunately, this obviously reaches its limits quite quickly: CPUs only have a
+fixed number of cores, and at some point multiple independent sub-problems must
+indeed be solved on the same core. Multiple independent sub-problems on the
+same core, however, is not an inherently bad issue: if \textit{all} cores have
+sub-problems they are working on, then progress is being made on the original
+problem with all hardware resources in full use.
 
-\begin{itemize}
-    \item Fibonacci example for compute bound
-    \item Include latency-incurring example here in BG chapter, or later?
-\end{itemize}
+This only becomes an issue when one core finishes all of its sub-problems, but
+other cores are still working on theirs. An entire core is sitting around
+waiting and doing nothing, even though it could be helping its fellow core
+compatriots out with the workload instead. Ideally, it would be nice if this
+core could \textit{steal} work from another core \footnote{Who doesn't like
+offloading work onto others?}, so that all cores are being fully utilized to
+making progress on the original problem. How to best implement such a scheme is
+the raison d'être of work-stealing schedulers.
 
 \subsection{DAG model of Parallel Computations}
 
-\begin{itemize}
-    \item Taken largely from \cite{cormen_introduction_2009, herlihy_art_2012,
-        blumofe_executing_1995}
-    \item With typical sequential computing, all instructions can be defined as
-        a totally ordered set of instructions, where the ordering specifies the
-        execution order. With multithreaded computing, a computation can be
-        defined as a partially ordered set of instructions, which may be
-        executed in any order that complies with the partial ordering.
-    \item This partial ordering in a multithreaded computation can be
-        represented as a DAG \(G = (V, E)\)
-    \item Each node in \(V\) represents an instruction to be executed
-    \item Each directed edge in \(E\) represents dependencies between
-        instructions
-    \begin{itemize}
-        \item Edge \((u,v) \in E\) means that instruction \(u\) must execute
-            before instruction \(v\)
-        \item A horizontal edge, called \textbf{continuation} edges, represents
-            the sequential ordering in a given thread (threads are the
-            horizontal shaded blocks of sequential instructions)
-        \item A thread can spawn another thread, which is indicated by a
-            downward edge originating from a \textbf{spawn instruction}. Spawn
-            instructions, the instruction that actually performs the spawn
-            operation, are the only nodes with outdegree of 2. Spawns introduce
-            parallelism: instructions in different threads can execute
-            concurrently, and by extension execute in parallel.
-        \item An upward edge, called a \textbf{join edge}, represents points of
-            synchronization: instruction nodes that have incoming join edges
-            wait until all previous instructions have executed before
-            proceeding.
-    \end{itemize}
-    \item If a directed path exists between \(u\) and \(v\), they are
-        (logically) in series, and execute serially just like in typical
-        serial programs (doesn't say anything about when they're executed,
-        only that they must not execute in parallel and must execute in
-        order specified)
-    \item Otherwise if a path does not exist, they are (logically) in
-        parallel, meaning they \textit{\textbf{may}} execute in parallel (does not specify
-        that they \textit{\textbf{will}} execute in parallel, only that at runtime a
-        scheduler is allowed to choose to run them in parallel by assigning
-        them to available processors)
-\end{itemize}
+Before diving into the guts of how a work-stealing scheduler functions, a
+framework for modeling and analyzing parallel computations is necessary.
+Presented in this section and the next is a cursory exposition, largely based
+off of \cite{cormen_introduction_2009, herlihy_art_2012,
+blumofe_executing_1995}.
+
+With typical sequential computing, all instructions can be defined as a
+totally ordered set of instructions, where the ordering specifies the
+execution order. With multithreaded computing, a computation can be defined
+as a partially ordered set of instructions, which may be executed in any
+order that complies with the partial ordering. This partial ordering in a
+multithreaded computation can be represented as a directed acyclic graph
+\footnote{From this point on in the report shortened to DAG.} \(G = (V, E)\).
+
+Each node in \(V\) represents an instruction to be executed and each directed
+edge in \(E\) represents dependencies between instructions. An edge \((u,v) \in
+E\) means that instruction \(u\) must execute before instruction \(v\). If a
+directed path exists between \(u\) and \(v\), they are (logically) in series,
+and execute serially just like in typical sequential programs. Otherwise if such
+a path does not exist, they are (logically) in parallel, meaning they
+\textit{\textbf{may}} execute in parallel (does not specify that they
+\textit{\textbf{will}} execute in parallel, only that at runtime a scheduler is
+allowed to choose to run them in parallel by assigning them to available
+processors).
 
 \subsection{Analysis of Parallel Computations}
 \label{subsection:analysis_of_parallel_computations}
 
-\begin{itemize}
-    \item To analyze the theoretical performance of multithreaded program, we
-        need a more formal way of describing the efficiency of such programs
-    \item Let \(T_P\) be the running time of a multithreaded program run on
-        \(P\) processors
-    \item The \textbf{work} of a computation is the total time required to
-        execute each computation node in the DAG. In other words, work is the
-        time required to execute the computation on a single processor: \(T_1\).
-    \item The \textbf{span} (also called critical path) of a computation is the
-        length of the longest sequence of computations that need to be executed
-        serially, due to computation dependencies represented as edges in the
-        DAG. In other words, the span is the running time if the computation
-        could be run on an infinite number of processors, denoted by
-        \(T_\infty\).
-    \item Ideally, to reduce execution time, a computation minimizes the work
-        and span
-    \item Using the above two definitions, we arrive at two very useful results:
-    \begin{itemize}
-        \item \textbf{Work law:} Since \(P\) processors can perform at most
-            \(P\) operations in one time step, the total amount of work
-            performed in \(T_P\) time is \(P T_P\). Since the total amount of
-            work to be done is \(T_1\), we see that \[P T_P \geq T_1\] This can
-            also be interpreted as the fact that the time \(T_P\) to run the
-            computation on \(P\) processors is at least the time taken to run on
-            one processor \(T_1\) divided by the number of processors \(P\):
-            \[T_P \geq T_1 / P\]
-        \item \textbf{Span law:} Since the time taken to run a computation on a
-            finite number of processors \(P\) cannot be faster than the time
-            taken on an infinite number of processors, we have \[T_P \geq
-            T_\infty\]
-    \end{itemize}
-    \item Now we can define a few useful performance metrics:
-    \begin{itemize}
-        \item \textbf{Speedup:} Defined by the ratio \(S_P = T_1 / T_P\),
-            expressing how much faster the computation is on \(P\) processors
-            than on 1 processor. Rearranging the work law, we see that \(T_1 /
-            T_P \leq P\), meaning that the speedup gained by running on \(P\)
-            processors is at most \(P\). When the speedup scales linearly
-            with the number of processors \(T_1 / T_P = \Theta(P)\), we have
-            \textit{\textbf{linear speedup}}, and when \(T_1 / T_P = P\) we have
-            \textit{\textbf{perfect linear speedup}}.
-        \item \textbf{Parallelism:} The amount of \textit{\textbf{parallelism}} in a
-            computation is expressed by the ratio \(T_1 / T_\infty\). This
-            represents the average number of computations that can be performed
-            in parallel at \textit{\textbf{each step}} along the critical path. This is
-            also the maximum possible speedup that can be achieved on any number
-            of processors (using the span law: \(T_1 / T_P \leq T_1 /
-            T_\infty\)). We see that there is not much point in using
-            \(P\) processors when \(P > T_1 / T_\infty\), as the extra
-            processors will just be idle not performing work.
-    \end{itemize}
-\end{itemize}
+To analyze the theoretical performance of multithreaded computations, a more
+formal way of describing the efficiency of such programs is needed.
 
-\subsection{Scheduling}
+Let \(T_P\) be the running time of a multithreaded program run on \(P\)
+processors. The \textbf{work} of a computation is the total time required to
+execute each computation node in the DAG. In other words, work is the time
+required to execute the computation on a single processor: \(T_1\). The
+\textbf{span} (also called critical path) of a computation is the length of the
+longest sequence of computations that need to be executed serially, due to
+sequential dependencies represented as edges in the DAG. In other words, the
+span is the running time if the computation could be run on an infinite number
+of processors, denoted by \(T_\infty\).
+
+Using the above two definitions, two very useful results emerge:
 
 \begin{itemize}
-    \item Our model of multithreaded computation does not specify which
-        instructions to run on which processors at what point in time: this is
-        the job of the \textbf{scheduler}.
-    \item A scheduler constructs an \textbf{execution schedule} that maps
-        instruction nodes in the multithreaded computation DAG to processors at
-        each step in time \footnote{In practice, our scheduler that breaks down
-            the multithreaded DAG is a user-space scheduler that maps
-            instructions on to threads (as many as there are processors), and an
-            operating system level thread scheduler then schedules these OS
-            level threads. In other words, a userspace scheduler maps
-        instruction nodes onto a fixed number of OS threads, and the kernel
-    level scheduler maps these threads onto hardware processor cores.}. A
-    typical goal for a scheduler is to reduce absolute execution time (we later
-    prove asymptotic bounds for our scheduler in terms of the work and span). At
-    any given point in time a processor is either active or idle; a scheduler
-    tries to minimize the amount of time a processor sits idle.
-    \item An execution schedule must satisfy all constraints given
-    by the edges
-        present in the DAG, such that the partial ordering of instructions is
-        satisfied.
-    \item As mentioned in section \ref{section:parallel_computing}, programmers
-        can themselves schedule when threads in their programs should be run as
-        well as ensure proper synchronization. This low-level manual thread
-        orchestration, however, becomes increasingly difficult with the number
-        of threads involved, especially when shared resources and thread
-        synchronization are required: the sheer number of possible interleavings
-        of code execution quickly becomes unwieldy. Not only are threads
-        difficult to reason about conceptually, it is also important for the
-        programmer to perform efficient load balancing of processors to optimize
-        utilization of available computing resources. A programmer would have to
-        manually use complex communication protocols to ensure each thread
-        receives a balanced amount of work to execute, which can be difficult
-        and error prone.
-    \item An easier approach is to raise the level of abstraction, and instead
-        only require programmers to merely \textit{\textbf{expose}} sections of possible
-        parallelism in their programs, while letting a runtime system take care
-        of the thread creation and building an execution schedule. The runtime
-        systems in turn then becomes responsible for such a schedule that not
-        only satisfies all ordering constraints, but also achieves high
-        performance and efficiency.
+    \item \textbf{Work law:} Since \(P\) processors can perform at most
+        \(P\) operations in one time step, the total amount of work
+        performed in \(T_P\) time is \(P T_P\). Since the total amount of
+        work to be done is \(T_1\), we see that \[P T_P \geq T_1\] This can
+        also be interpreted as the fact that the time \(T_P\) to run the
+        computation on \(P\) processors is at least the time taken to run on
+        one processor \(T_1\) divided by the number of processors \(P\):
+        \[T_P \geq T_1 / P\]
+    \item \textbf{Span law:} Since the time taken to run a computation on a
+        finite number of processors \(P\) cannot be faster than the time
+        taken on an infinite number of processors, consequently \[T_P \geq
+        T_\infty\]
 \end{itemize}
 
-\subsection{Work Stealing}
+Now we can define a few useful performance metrics:
+
+\begin{itemize}
+    \item \textbf{Speedup:} Defined by the ratio \(S_P = T_1 / T_P\),
+        expressing how much faster the computation is on \(P\) processors
+        than on 1 processor. Rearranging the work law, we see that \(T_1 /
+        T_P \leq P\), meaning that the speedup gained by running on \(P\)
+        processors is at most \(P\). When the speedup scales linearly
+        with the number of processors \(T_1 / T_P = \Theta(P)\), this is known
+        as \textit{\textbf{linear speedup}}, and when \(T_1 / T_P = P\)
+        \textit{\textbf{perfect linear speedup}} is observed.
+    \item \textbf{Parallelism:} The amount of \textit{\textbf{parallelism}} in a
+        computation is expressed by the ratio \(T_1 / T_\infty\). This
+        represents the average number of computations that can be performed
+        in parallel at \textit{\textbf{each step}} along the critical path. This is
+        also the maximum possible speedup that can be achieved on any number
+        of processors (using the span law: \(T_1 / T_P \leq T_1 /
+        T_\infty\)). We see that there is not much point in using
+        \(P\) processors when \(P > T_1 / T_\infty\), as the extra
+        processors will just be idle not performing work.
+\end{itemize}
+
+\subsection{Work-Stealing Schedulers}
 \label{subsection:work_stealing}
 
-\section{Futures}
+This model of multithreaded computation does not specify which instructions to
+run on which processors at what point in time: this is the job of the
+\textbf{scheduler}. A scheduler constructs an \textbf{execution schedule} that
+maps instruction nodes in the multithreaded computation DAG to processors at
+each step in time. A typical goal for a scheduler is to reduce absolute
+execution time, and consequently minimize the amount of time a processor sits
+idle. An execution schedule must satisfy all constraints given by the edges
+present in the DAG, such that the partial ordering of instructions is satisfied.
+
+As mentioned in section \ref{section:parallel_computing}, programmers can
+themselves schedule when threads in their programs should be run. This
+low-level manual thread orchestration, however, becomes increasingly difficult
+with the number of threads involved. An easier approach is to raise the level of
+abstraction by allowing programmers to express the \textit{logical}
+opportunities for parallelism in their programs, and let a runtime system take
+care of thread creation and building an execution schedule.
+
+Work-stealing schedulers provide such a runtime. Classic work-stealing
+\footnote{In this report we refer to the work-stealing algorithm in
+    \cite{arora_thread_1998} as classic work-stealing. This algorithm has strong
+    theoretical and empirical performance bounds, and is the basis for many
+real-world work-stealing implementations \cite{frigo_implementation_1998}.}
+schedulers assign a single thread, called worker threads, to each processor.
+Each worker thread has a double-ended queue (deque) of nodes found in the
+computational DAG. During program execution, worker threads pop nodes off the
+bottom of their deques and executes them, and if the executed node spawns any
+child nodes they are pushed to the bottom. A worker thread will keep doing this
+until it rounds out of nodes in its deque. At this point, the worker thread
+becomes a thief and steals from the deque of another worker thread, by randomly
+selecting a victim worker thread and popping a node off the top of its deque.
+This continues until all nodes in the DAG have been executed, and the program
+can terminate. Such a work-stealing scheduler can be proven to execute in
+expected time \(O(T_1 / P + T_\infty)\) \cite{arora_thread_1998}.
+
+\section{Great Scott: Futures!}
 \label{section:futures}
 
-TODO: put general stuff about futures concept here
+Futures can be thought of operations/values that can be completed/returned at
+some point in the future. They are a popular abstraction to represent
+asynchronous computations, as they provide convenient representations of values
+that will \textit{eventually} be available \cite{halstead_implementation_1984,
+halstead_multilisp_1985}.
 
-\subsection{Futures in Rust}
-\label{subsection:futures_in_rust}
-
-TODO: describe how futures in Rust work here (e.g. state machine, async fns,
-executors, pinning, etc.)
+The Rust programming language supports futures and provides ergonomic language
+level features to create and interact with them. Very briefly, futures in Rust
+can be thought of as state machines that represent the state of an asynchronous
+computation. These state machines can be manually defined, or more commonly,
+generated by the compiler. A future is no use on its own though - it requires an
+\textit{\textbf{executor}} to \textbf{\textit{poll}} it to completion. A future,
+when polled, either indicates that it is ready (completed) or is pending
+(blocked). If blocked, the executor will go find another future to poll in the
+meantime, and when the blocked future is ready to make progress again notifies
+the executor through the use of a \textbf{\textit{waker}}. The waker can
+essentially be thought of as a callback function that lets the executor know the
+future can be polled again. Additionally, since a future may hold references to
+fields within it self, a future may not move in memory once it has first been
+polled (otherwise these references would become invalidated, leading to dangling
+pointers). Rust statically confirms at compile-time that futures do not move in
+memory through the use of its type system.
 
 \subsection{Futures and DAGs}
 
@@ -598,15 +578,13 @@ computations using DAG model
 \chapter{Conceptual Latency-Hiding: To Wait Or Not to Wait?}
 \label{chapter:conceptual_latency-hiding:_to_wait_or_not_to_wait?}
 
-This chapter describes the high-level overview of the ProWS-R latency-hiding
-work stealing algorithm, without diving into the details of the implementation.
+This chapter describes the ProWS-R latency-hiding work stealing algorithm.
 Section \ref{section:overview_of_the_prows_algorithm} provides an overview of
 the core scheduling algorithm, and the considerations that allow for repeatedly
-polled futures found in Rust. Section
+awoken futures found in Rust. Section
 \ref{section:required_runtime_support_for_latency_hiding} describes the
 additional runtime support necessary to provide the latency-hiding capabilities
 of the scheduler.
-
 
 \section{The ProWS-R Algorithm}
 \label{section:overview_of_the_prows_algorithm}
@@ -676,7 +654,7 @@ better bound on execution time given latency-incurring operations (section
 
 Presented here is a description of the ProWS-R algorithm, the conceptual data
 structures used, and the adjustments made to accommodate the futures found in
-Rust. Again, this is largely based upon the work of Singer et. al, and their
+Rust. Again, this is largely based upon the work of Singer et al., and their
 work should be consulted as reference.
 
 The principle idea behind ProWS-R is that there can be multiple deques in the
@@ -684,14 +662,14 @@ system at any given time, and each worker thread owns an \textbf{\textit{active
 deque}} that they work off of. Whenever a worker thread encounters a blocked
 future, its current active deque is marked as suspended, the worker relinquishes
 ownership of the deque, and it attempts to find work elsewhere. The act of
-suspending deques allows for the latency of latency-incurring operations to be
-hidden while worker threads can fully utilize the available hardware resources
-to make progress on remaining available work. This differs from classic
-work-stealing, where such a scheduler without even the concept of
-latency-incurring operations would simply treat the operation as a regular
-computation, and be forced to block until the latency is incurred. When a worker
-thread is executing a node and does not encounter a blocked future, the
-algorithm proceeds the same as classic work stealing.
+suspending deques allows for the latency of such blocked futures to be hidden
+while worker threads can fully utilize the available hardware resources to make
+progress on remaining available work. This differs from classic work-stealing,
+where such a scheduler without even the concept of latency-incurring operations
+would simply treat the operation as a regular computation, and be forced to
+block until the latency is incurred. When a worker thread is executing a node
+and does not encounter a blocked future, the algorithm proceeds the same as
+classic work stealing.
 
 When a blocked future reaches completion, a callback is executed that marks the
 deque as \textbf{\textit{Resumable}}, indicating that the previously suspended
@@ -800,6 +778,7 @@ Stealable sets support the following operations:
 \end{itemize}
 
 \subsection{Scheduling Loop}
+\label{subsection:scheduling_loop}
 
 The main scheduling loop is shown in algorithm \ref{alg:scheduling_loop}.
 Execution starts by setting the active deque of all worker threads to an empty
@@ -849,7 +828,7 @@ Without the extra logic to deal with futures (lines \ref{line:future_start} -
         \If{$node = \text{null}$} \label{line:no_work}
             \State $node \gets \text{steal()}$
         \EndIf
-        \State $\textbf{return} node$
+        \State $\textbf{return } node$
     \EndFunction
     \algstore{findnode}
 \end{algorithmic}
@@ -892,9 +871,8 @@ resource utilization, it's undesirable for worker threads to perform any
 operations that are not directly related to executing work nodes (contributes to
 scheduler overhead). As such, the callback is responsible for executing when
 completion of a blocked future is detected, and rescheduling the future node for
-execution by a worker thread. A more concrete reasoning and explanation of how
-this occurs is given in section
-\ref{section:required_runtime_support_for_latency_hiding}.
+execution by a worker thread. A more concrete explanation of how this occurs is
+given in section \ref{section:required_runtime_support_for_latency_hiding}.
 
 \begin{algorithm}
 \caption{Callback Procedure (called upon completion of the blocked future $f$)}
@@ -919,36 +897,31 @@ this occurs is given in section
 \end{algorithm}
 
 Due to the way Rust futures implement their completion signaling mechanism using
-wakers (introduced in section \ref{subsection:futures_in_rust}), it is possible
-for multiple wakers to wake up the same future. This is unlike the futures
-supported by ProWS, and it is vital that ProWS-R take specific care to handle
-\textit{repeatedly polled futures}. Multiple polled futures can happen, for
+wakers (introduced in section \ref{section:futures}), it is possible for
+multiple wakers to wake up the same future. This is unlike the futures supported
+by ProWS, and it is vital that ProWS-R take specific care to handle
+\textit{repeatedly awoken futures}. This can happen, for
 example, when two futures are manually polled immediately after one another
 using the same waker, like when using the \texttt{join} function \footnote{The
-    \texttt{join} function in the Rust futures crate \footnote{Crates in Rust
-    are essentially synonymous to packages or libraries in other languages.}
-    \cite{noauthor_join_nodate} can be used to create a future that concurrently
-    executes two or more futures (note: not in parallel). It does this by
-    polling the two or more futures passed to it in sequential order, passing
-    and cloning its waker every time. This means as soon as at least one of the
-    futures is ready to make progress the \texttt{join} future is awoken and can
-    be rescheduled for execution. These multiple futures can all trigger the
-    waker clones that wake up the same future, hence the need for ProWS-R to
-    support repeatedly polled futures.}. Fortunately, supporting this is trivial
-    \footnote{While trivial, early versions of the implementation incorrectly
-        assumed that when a callback is executed, the suspended deque associated
-        with that callback will always be Suspended. This led to all sorts of
-        extremely subtle and difficult to diagnose issues where scheduler state
-        eventually became corrupted, since nodes would be wrongly pushed to
-    deques more than once, possibly leading to the program never terminating or
-other consequent problems.}: all that is required is a check (line
-\ref{line:sus_check}) to see if the deque the future was suspended with is
-already unsuspended, and if so, the callback does not perform any actions. If,
-however, the deque is still suspended, the callback pushes the future back to
-the bottom of the deque, transitions it to Resumable, and adds it to a random
-worker thread's stealable set if the deque is not already in one. Doing this the
-callback makes the now-resumable future ready to be executed by a worker thread
-again.
+    \texttt{join} function in the Rust futures crate \cite{noauthor_join_nodate}
+    (crates are essentially synonymous to packages or libraries in other
+    languages) can be used to create a future that concurrently executes two or
+    more futures (note: not in parallel). It does this by polling the two or
+    more futures passed to it in sequential order, passing and cloning its waker
+    every time. This means as soon as at least one of the futures is ready to
+    make progress the \texttt{join} future is awoken and can be rescheduled for
+    execution. These multiple futures can all trigger the waker clones that wake
+    up the same future, hence the need for ProWS-R to support repeatedly awoken
+futures.}. Fortunately, supporting this is trivial \footnote{While trivial, section
+\ref{section:pitfalls} describes the vital importance of being able to support
+repeatedly awoken futures.}: all that is required is a
+check (line \ref{line:sus_check}) to see if the deque the future was suspended
+with is already unsuspended, and if so, the callback does not perform any
+actions. If, however, the deque is still suspended, the callback pushes the
+future back to the bottom of the deque, transitions it to Resumable, and adds it
+to a random worker thread's stealable set if the deque is not already in one. By
+doing this the callback makes the now-resumable future ready to be executed by a
+worker thread again.
 
 When a worker thread cannot find work to execute in its active deque (line
 \ref{line:no_work}), it must become a thief and steal from elsewhere. The steal
@@ -1061,16 +1034,17 @@ steals, the final bound on execution time can be found.
 \label{section:required_runtime_support_for_latency_hiding}
 
 The ProWS-R algorithm on its own is not enough to enable latency-hiding
-\footnote{This section is based off the work by Singer et. al on Cilk-L
+\footnote{This section is based off the work by Singer et al. on Cilk-L
 \cite{singer_scheduling_2019}, a latency-hiding extension of Cilk that uses the
 ProWS algorithm, with considerations on how to integrate with the mechanisms
-involved with Rust futures.}. To truly support latency-hiding, additional
-runtime special considerations must be accounted for to support the core
-scheduling algorithm. Scheduling futures is one thing, but actually hiding the
-latency in an efficient manner is another. Essentially, the runtime support
-needs to answer the question: how can latency-incurring operations be performed
-asynchronously, while worker threads can still make progress on the primary
-computation?
+involved with Rust futures (primarily described in chapter
+\ref{chapter:implementation:_time_is_an_illusion}).}. To truly support
+latency-hiding, additional runtime special considerations must be accounted for
+to support the core scheduling algorithm. Scheduling futures is one thing, but
+actually hiding the latency in an efficient manner is another. Essentially, the
+runtime support needs to answer the question: how can latency-incurring
+operations be performed asynchronously, while worker threads can still make
+progress on the primary computation?
 
 \subsection{The I/O Thread}
 
@@ -1079,11 +1053,9 @@ is undesirable for any of the \(P\) worker threads to be doing anything except
 for executing nodes. Anything that a worker thread does outside of this only
 contributes to scheduler overhead. To avoid placing the burden of processing
 latency-incurring operations on a worker thread, the ProWS-R runtime uses an
-additional thread, named the I/O thread, dedicated solely to this task
-\footnote{The I/O thread capability is provided by the async-io crate
-\cite{noauthor_async-io_2022}, which abstracts over varying operating system
-event queues}. This relieves the worker threads of having to sacrifice time that
-could otherwise have been spent executing work.
+additional thread, named the I/O thread, dedicated solely to this task. This
+relieves the worker threads of having to sacrifice time that could otherwise
+have been spent executing work.
 
 Naturally, at first glance this may seem to bring little benefit, as introducing
 an additional thread simply means that now hardware resource usage needs to be
@@ -1119,13 +1091,13 @@ latency-incurring operations. The following functionality is required:
         for a worker thread to resume again.
 \end{enumerate}
 
-One strategy to fulfill these requirements would be for the I/O thread to
-repeatedly poll to see if the file descriptors that futures are blocked on have
-become ready. This, however, is not ideal as it would necessitate the I/O thread
-to take up processor resources performing this repetitive polling, even when
-nothing is ready. An additional concern would be how often to perform the
-polling: too often and processor usage would be excessive; not often enough and
-resumable futures might not be made available quickly enough.
+One strategy would be for the I/O thread to repeatedly poll to see if the file
+descriptors that futures are blocked on have become ready. This, however, is not
+ideal as it would necessitate the I/O thread to take up processor resources
+performing this repetitive polling, even when nothing is ready. An additional
+concern would be how often to perform the polling: too often and processor usage
+would be excessive; not often enough and resumable futures might not be made
+available quickly enough.
 
 \subsection{Event Queues}
 \label{subsection:event_queues}
@@ -1149,7 +1121,7 @@ blocked future (registered by a worker thread in part
 \ref{item:register_with_io_thread}) available for a worker thread to resume
 again. More concretely, when the underlying resource a future was blocked on
 becomes ready, the I/O thread triggers the corresponding waker \footnote{ As
-    described in section \ref{subsection:futures_in_rust}, the waker mechanism
+    described in section \ref{section:futures}, the waker mechanism
     is used for signaling if futures are ready to make progress. When the I/O
     thread, awoken by the event queue, detects that a future is ready to make
     progress, its waker will be triggered (the waker will then execute the
@@ -1176,6 +1148,7 @@ hiding the latency-incurring operation of the blocked future.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Implementation: Time is an Illusion}
+\label{chapter:implementation:_time_is_an_illusion}
 
 This chapter describes the technical details and experience of the prototype
 implementation of ProWS-R and its corresponding runtime. While the conceptual
@@ -1208,9 +1181,8 @@ implementation done as part of this project answers the above questions. Section
 \ref{section:rayon-lh_architecture_overview} provides an architectural overview
 and section \ref{section:jobs:_representing_work} explains how work nodes are
 represented. Section \ref{section:differences_between_rayon_and_rayon-lh}
-outlines the specific contributions of the implementation. The implementation
-experience and challenges are then described in sections \ref{section:pitfalls}
-and \ref{section:implementation_challenges:_concurrent_programming_is_hard}.
+outlines the specific contributions of the implementation. Specific examples of
+implementation challenges are described in section \ref{section:pitfalls}.
 
 \section{Rayon-LH Architecture Overview}
 \label{section:rayon-lh_architecture_overview}
@@ -1426,21 +1398,20 @@ danger.
 \label{section:jobs:_representing_work}
 
 While conceptually a work node in the computational DAG is simple to understand,
-how is this actually implemented in practice? Cilk and its derivatives take an
-approach of using a combination of a compiler and runtime library to essentially
-manually create closures \footnote{In this context: functions with captured
-    references to their enclosing stack frames. In Cilk this is done by creating
-    Cilk ``activation frame'' structures. In Rust, closures are basically compiler
-    generated structs that contain references or copies to the closure's
-    environment, and a method that executes the closure's function using this
-captured environment.} (since the C language itself provides no such feature)
-that represent work nodes in the computational DAG stored on the respective
-stacks of worker threads where they were created, and \textit{pointers} to these
-closures are stored in the deques that are subsequently popped and stolen to be
-dereferenced and the corresponding closure executed (using calls to
-\texttt{setjmp} and \texttt{longjmp} inserted by the Cilk compiler)
-\footnote{Please note this brief explanation is a massive oversimplification of
-the Cilk implementation.} \cite{frigo_implementation_1998}.
+how is this actually implemented in practice? Very briefly, Cilk and its
+derivatives take an approach of using a combination of a compiler and runtime
+library to essentially manually create closures \footnote{In this context:
+    functions with captured references to their enclosing stack frames. In Cilk
+    this is done by creating Cilk ``activation frame'' structures. In Rust,
+    closures are basically compiler generated structs that contain references or
+copies to the closure's environment, and a method that executes the closure's
+function using this captured environment.} (since the C language itself provides
+no such feature) that represent work nodes in the computational DAG stored on
+the respective stacks of worker threads where they were created, and
+\textit{pointers} to these closures are stored in the deques that are
+subsequently popped and stolen to be dereferenced and the corresponding closure
+executed (using calls to \texttt{setjmp} and \texttt{longjmp} inserted by the
+Cilk compiler) \cite{frigo_implementation_1998}.
 
 Rust has the fortunate advantage of supporting closures as a built-in language
 feature. This means in Rayon-LH, the role that the Cilk compiler plays in
@@ -1548,7 +1519,7 @@ not be suspended/resumed and do not incur latency. To support asynchronous
 operations that represent future nodes in the computational DAG, Rayon-LH uses
 the generic \texttt{FutureJob} type shown in figure \ref{fig:futurejob}. A
 \texttt{FutureJob} is similar to a \texttt{StackJob}, but wraps a Rust Future
-(described in section \ref{subsection:futures_in_rust}) instead of a regular
+(described in section \ref{section:futures}) instead of a regular
 Rust closure. Note that a \texttt{FutureJob} is not a Rust future itself, it
 merely wraps such a future.
 
@@ -1572,7 +1543,7 @@ merely wraps such a future.
 In order to provide the guarantee that a Rust future stay pinned in memory once
 it has first been polled, the API (figure \ref{fig:future_job_api}) to create,
 spawn, and await a \texttt{FutureJob} relies on the Rust \texttt{Pin} type, as
-described in section \ref{subsection:futures_in_rust}. In short, the Rust type
+described in section \ref{section:futures}. In short, the Rust type
 system statically guarantees that once a \texttt{FutureJob} is spawned, it is
 not moved from its original memory location.
 
@@ -1602,7 +1573,9 @@ indicating the future is blocked, lines \ref{line:future_start} -
 \ref{line:future_end} of the scheduling loop are performed: the active Deque of
 the executing WorkerThread is suspended, and the resource the future is blocked
 on is registered with the I/O thread event queue (section
-\ref{subsection:event_queues}). The previously active Deque is put back in the
+\ref{subsection:event_queues}). The I/O thread functionality is provided by the
+async-io crate \cite{noauthor_async-io_2022}, which abstracts over varying
+operating system event queues. The previously active Deque is put back in the
 Registry \texttt{deque\_bench} so that it may have somewhere to live in memory.
 
 At some point in the future when the I/O thread event queue detects the resource
@@ -1639,8 +1612,8 @@ and replaced by the respective ProWS-R procedures. At the same time, ProWS-R
 provides almost a sort of ``backwards compatibility'' with the tried and true
 classic work-stealing algorithm, in the sense that if latency-incurring
 operations (i.e. \texttt{FutureJob}s) are not used, the scheduling algorithm is
-the exact same and also provides the exact same performance (discussed in
-chapter
+the exact same (described in section \ref{subsection:scheduling_loop}) and also
+provides the exact same performance (discussed in chapter
 \ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}).
 
 Arguably, a weakness of Rayon-LH is that it requires far more shared state to
@@ -1657,10 +1630,18 @@ interact with a shared Stealables-like component.
 
 A complete memoir of the migraine-inducing false assumptions and traps
 encountered during the implementation of Rayon-LH could likely fill an entire
-tome (with possibly yet even more undiscovered). Here is a short non-exhaustive
-list:
+tome. Here is a short non-exhaustive list:
 
 \begin{itemize}
+    \item While supporting repeatedly awoken futures (as described in section
+        \ref{subsection:scheduling_loop}) in ProWS-R is trivial, not recognizing
+        this requirement can lead to dire outcomes: early versions of the
+        implementation incorrectly assumed that when a callback is executed, the
+        suspended deque associated with that callback will always be Suspended.
+        This led to all sorts of extremely subtle and difficult to diagnose
+        issues where scheduler state eventually became corrupted, since nodes
+        would be wrongly pushed to deques more than once, possibly leading to
+        the program never terminating or other consequent problems.
     \item The \texttt{FutureJobWaker} must ensure that it begins execution of
         the callback procedure in algorithm \ref{alg:callback} only
         \textit{after} the deque suspension process on line
@@ -1703,34 +1684,6 @@ list:
     \end{itemize}
 \end{itemize}
 
-\section{Implementation Challenges: Concurrent Programming is Hard}
-\label{section:implementation_challenges:_concurrent_programming_is_hard}
-
-Undoubtedly, the experience of implementing Rayon-LH was quite challenging.
-The difficulties faced in this project largely stem from the inherent issue that
-concurrent programming is simply hard to wrap ones mind around. The intractable
-number of thread interleavings and possible flows of execution make for a rather
-miserable programming experience, if one does not take proactive caution and
-combative measures. Even trickier phenomena like atomic operations and memory
-orderings only add to the pain.
-
-A stark consequence of the non-determinism of concurrent programming is that
-debugging becomes even more complicated. Many heisengbugs \footnote{A bug that
-disappears after trying to study it, particularly by running it in a debugger.}
-were encountered in the process of the implementation, and other bugs only
-showed their face after many thousands of program executions or when running
-into pathological input cases. To aid buggy-implementation diagnosis, heavy use
-of the logging system that Rayon-LH inherits from Rayon and stress tests in the
-form of repeatedly running the benchmarks in chapter
-\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
-was made. While far from a panacea to the undying wish of the hardware to spite
-the implementation running on it, the logger output was instrumental to piecing
-together a narrative of why or why not the scheduler was performing certain
-operations and not others. Much like a detective investigating forensic evidence
-at a crime scene, the interleaved lines of thread logger output provided many
-clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
-``elementary, my dear Watson''.
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Evaluation: To Superlinear and Beyond (Not Really... Just Superlinear)}
@@ -1743,7 +1696,7 @@ compute vs I/O bound workloads in section
 \ref{section:compute_vs_i/o_bound_workloads}, and the scheduler overhead
 compared to classical work-stealing \ref{section:rayon-lh_scheduler_overhead}.
 The experimental setup is described in section \ref{section:experimental_setup}
-and the limitations of the implementation are discussed in section
+and the insights and limitations of the implementation are discussed in section
 \ref{section:insights_and_limitations}. All benchmark results and programs can
 be found in \cite{noauthor_rayon-lh_nodate}.
 
@@ -1798,26 +1751,48 @@ with a single worker thread). The Ideal scheduler simply skips any simulated
 latency and immediately begins computation, completely eliminating all latency
 in the DAG.
 
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_1.png}
+    \caption{MapReduceFib benchmark results with latency value of 1 milliseconds}
+    \label{fig:map_reduce_plots_1ms}
+\end{figure}
+
 The MapReduceFib benchmark speedup results of ProWS-R and the classic scheduler,
-compared to the baseline, are shown in figure \ref{fig:map_reduce_plots}.
-Simulated latencies of 1, 50, and 100 milliseconds were used. As can be seen,
-ProWS-R indeed manages to hide latency and achieve speedups very close to Ideal.
+compared to the baseline, are shown in figures \ref{fig:map_reduce_plots_1ms},
+\ref{fig:map_reduce_plots_50ms}, and \ref{fig:map_reduce_plots_50ms}. Simulated
+latencies of 1, 50, and 100 milliseconds were used. As can be seen, ProWS-R
+indeed manages to hide latency and achieve speedups very close to Ideal.
 Naturally, the benefit of latency-hiding when the latency is very short (1
 millisecond) is minimal compared to when the latency is significant (50, 100
 milliseconds). With a latency of 1 millisecond, the total amount of latency in
-the computation is not considerable when compared to the total amount
-of computational work \(T_1\). Consequently the difference in speedups are not
-as drastic. When the latencies are increased to 50 and 100 milliseconds, the
+the computation is not considerable when compared to the total amount of
+computational work \(T_1\). Consequently the difference in speedups are not as
+drastic. When the latencies are increased to 50 and 100 milliseconds, the
 benefits of latency-hiding truly start to show. ProWS-R exhibits superlinear
 \footnote{Superlinear speedup is defined as a speedup \textit{greater} than
     \(P\) when running on \(P\) processors \cite{ristov_superlinear_2016}. This
     appears to contradict the work law defined in section
     \ref{subsection:analysis_of_parallel_computations}, but is explained by the
-fact that the classic scheduler incurs \textit{all} latency costs in \(T_1\),
-while the latency-hiding scheduler incurs only the latency cost in the critical
-path \(T_\infty\).} speedups: reaching up to 297\(\times\) and 517\(\times\) for
-50 and 100 milliseconds, respectively. This is compared to 35\(\times\) for both
-latencies using the classic scheduler.
+    fact that the classic scheduler incurs \textit{all} latency costs in
+    \(T_1\), while the latency-hiding scheduler incurs only the latency cost in
+    the critical path \(T_\infty\).} speedups: reaching up to 297\(\times\) and
+    517\(\times\) for 50 and 100 milliseconds, respectively. This is compared to
+    35\(\times\) for both latencies using the classic scheduler.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_50.png}
+    \caption{MapReduceFib benchmark results with latency value of 50 milliseconds}
+    \label{fig:map_reduce_plots_50ms}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_100.png}
+    \caption{MapReduceFib benchmark results with latency value of 100 milliseconds}
+    \label{fig:map_reduce_plots_100ms}
+\end{figure}
 
 ProWS-R displaying larger speedups as latency values increase confirms that the
 scheduler is indeed effective at hiding latency: while the classic scheduler
@@ -1829,7 +1804,7 @@ course).
 
 Another interesting thing to note is the effect of hyperthreading
 \footnote{Hyperthreading is Intel's proprietary implementation of hardware-level
-threading}. When the number of worker threads starts to exceed the number of
+threading.}. When the number of worker threads starts to exceed the number of
 physical cores, two worker threads may be running on the same physical core, but
 in separate hyperthreads. Once this boundary is crossed, speedups of the
 latency-hiding schedulers (both ProWS-R and Ideal) begin to degrade. This is
@@ -1844,15 +1819,6 @@ longer in contention. When using latency-hiding schedulers, or for that matter
 any work-stealing implementation running primarily compute-bound workloads,
 setting the number of worker threads \(P\) to be the number of physical
 processors appears to be the best choice to maximize performance.
-
-\begin{figure}[ht]
-    \centering
-    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_1.png}
-    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_50.png}
-    \includegraphics[width=0.8\linewidth]{figures/map_reduce_plot_latency_100.png}
-    \caption{MapReduceFib benchmark results with varying latencies}
-    \label{fig:map_reduce_plots}
-\end{figure}
 
 \section{Compute vs I/O Bound Workloads}
 \label{section:compute_vs_i/o_bound_workloads}
@@ -1876,6 +1842,13 @@ possible) or uses a future that suspends for the equivalent duration (but this
 latency can be hidden). The percentage of I/O bound nodes in the workload
 dictate whether the blocking sleep call or future will be used.
 
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.45\textwidth]{figures/param_sweep_plot.png}
+    \caption{Parameter sweep benchmark results}
+    \label{fig:param_sweep}
+\end{figure}
+
 A plot showing the parameter sweep benchmark results is shown in figure
 \ref{fig:param_sweep}. As expected, the greatest speedups come from when the
 workload consists of a high percentage of I/O bound nodes. Speedup is also
@@ -1892,21 +1865,84 @@ the workload is purely compute-bound, ProWS-R performs better or equal to
 classic work-stealing (a benchmark dedicated to compute-bound comparison is
 discussed in section \ref{section:rayon-lh_scheduler_overhead}).
 
-\begin{figure}[ht]
-    \centering
-    \includegraphics[width=0.6\textwidth]{figures/param_sweep_plot.png}
-    \caption{Parameter sweep benchmark results}
-    \label{fig:param_sweep}
-\end{figure}
-
 \section{Rayon-LH Scheduler Overhead}
 \label{section:rayon-lh_scheduler_overhead}
 
 While latency-hiding capabilities are great, it would be less than ideal if this
 came at the cost of sacrificing performance on regular compute-bound workloads.
+In this section we are concerned with looking at whether Rayon-LH, using the
+ProWS-R scheduling algorithm, introduces any performance regressions compared to
+Rayon, using the classic scheduling algorithm. This benchmark runs the same
+example map and reduce program as in section
+\ref{section:latency-hiding_efficiency}, but just with \(n = 200\) and a latency
+duration of 0 (since we are only comparing performance on compute-bound work). A
+value of 200 was chosen for \(n\) simply to make benchmarking take less time.
+The results are still relevant, as a value of 200 is still sufficient to provide
+enough work to the scheduler implementations (the fastest run with 35 physical
+cores still took 0.438 seconds, with the slowest run on 1 core taking 16.179
+seconds).
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/overhead_plot.png}
+    \caption{Scheduler overhead plot}
+    \label{fig:overhead}
+\end{figure}
+
+The results are shown in figure \ref{fig:overhead}: both Rayon-LH and Rayon have
+the exact same performance on pure compute-bound workloads. Perfect linear
+speedup is achieved all the way until the number of physical cores is reached,
+until performance completely flatlines. Performance flatlining is to be
+expected, as with a pure compute-bound workload each worker thread is making
+full use of the processor execution units, and hyperthreading provides no
+benefit (TODO: why does hyperthreading \textit{decrease} performance with
+latency?).
+
+As shown in the plot, ProWS-R suffers no performance regression: this is by
+design, as ProWS-R executes the exact same work-stealing algorithm as classic
+work-stealing when no latency-incurring operations are encountered (as described
+in section \ref{subsection:scheduling_loop}). Rayon-LH, using ProWS-R, providing
+this ``backwards compatibility'' in terms of execution time, means that it can be
+used in any situation that Rayon using classic work-stealing is used. There is
+no need to decide between which scheduler to use depending on what kind of
+workload one may be running, Rayon-LH always provides greater than or equal
+speedups.
 
 \section{Insights and Limitations}
 \label{section:insights_and_limitations}
+
+The results are encouraging: ProWS-R and Rayon-LH always provide greater than or
+equal execution time speedups. Whether one's workload is primarily I/O or
+compute bound, it does not matter, as ProWS-R and Rayon-LH can be used
+regardless of workload type. Rayon-LH can essentially be used as a sort of
+drop-in replacement for Rayon, significantly improving performance of workloads
+containing latency-incurring operations without penalizing regular compute-bound
+workloads.
+
+Undoubtedly, the experience of implementing Rayon-LH was quite challenging.
+The difficulties faced in this project largely stem from the inherent issue that
+concurrent programming is simply hard to wrap one's mind around. The intractable
+number of thread interleavings and possible flows of execution make for a rather
+miserable programming experience, if one does not take proactive caution and
+combative measures. Even trickier phenomena like atomic operations and memory
+orderings only add to the pain.
+
+A stark consequence of the non-determinism of concurrent programming is that
+debugging becomes even more complicated. Many heisengbugs \footnote{A bug that
+disappears after trying to study it, particularly by running it in a debugger.}
+were encountered in the process of the implementation, and other bugs only
+showed their face after many thousands of program executions or when running
+into pathological input cases. To aid buggy-implementation diagnosis, heavy use
+of the logging system that Rayon-LH inherits from Rayon and stress tests in the
+form of repeatedly running the benchmarks in chapter
+\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
+was made. While far from a panacea to the undying wish of the hardware to spite
+the implementation running on it, the logger output was instrumental to piecing
+together a narrative of why or why not the scheduler was performing certain
+operations and not others. Much like a detective investigating forensic evidence
+at a crime scene, the interleaved lines of thread logger output provided many
+clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
+``elementary, my dear Watson''.
 
 TODO: move concurrency difficulties here, talk about pinning, stack overflow,
 tied to async-io
@@ -1917,7 +1953,7 @@ tied to async-io
 
 \section{Summary}
 
-\section{Lessons Learned}
+\section{Lessons Learned: Concurrent Programming is Hard}
 
 \section{Future Work}
 
