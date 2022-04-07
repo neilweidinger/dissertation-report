@@ -523,6 +523,35 @@ This continues until all nodes in the DAG have been executed, and the program
 can terminate. Such a work-stealing scheduler can be proven to execute in
 expected time \(O(T_1 / P + T_\infty)\) \cite{arora_thread_1998}.
 
+\subsection{Latency and DAGs}
+
+Classic work-stealing schedulers do not account for operations that incur
+latency. This means when they encounter a blocking operation, worker threads are
+effectively out-of-service until the operation completes. This is clearly a less
+than ideal situation, as hardware resources that could be utilized to make
+further progress on computation are sitting idle. The DAG model of computations
+can be extended to model latency-incurring operations, by using a weighted DAG
+where edge weights represent latency costs \cite{muller_latency-hiding_2016}.
+
+As an example of where classic work-stealing schedulers greatly suffer in
+performance, imagine a map and reduce program that retrieves each of its initial
+elements over a network connection. A partial DAG for such a program is shown in figure
+\ref{fig:map-reduce-dag}. The bolded red lines represent edges in the
+DAG that incur latency of the network request. Without latency-hiding,
+\textit{each} of the latency-incurring edges must be incurred by the worker
+threads. Clearly any latency that lies on the critical path cannot be avoided,
+but all other latency can be \textbf{\textit{hidden}} by executing other
+available work while the latency-incurring operation waits to complete. An ideal
+latency-hiding scheduler would suffer just the cost of the \textit{single}
+heaviest latency-incurring edge (on the critical path).
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.6\textwidth]{figures/map-reduce.png}
+    \caption{A partial DAG for map and reduce}
+    \label{fig:map-reduce-dag}
+\end{figure}
+
 \section{Great Scott: Futures!}
 \label{section:futures}
 
@@ -549,29 +578,14 @@ polled (otherwise these references would become invalidated, leading to dangling
 pointers). Rust statically confirms at compile-time that futures do not move in
 memory through the use of its type system.
 
-\subsection{Futures and DAGs}
-
-A diagram of a (partial) DAG for the distributed map and reduce example is shown
-in figure \ref{fig:map-reduce-dag}. The bolded red lines represent edges in the
-DAG that incur latency of the network request, that is simulated in the
-benchmark with a simple future that suspends for a desired duration. Without
-latency-hiding, \textit{each} of the latency-incurring edges must be incurred by
-the worker threads, while with (perfect) latency-hiding just the cost of the
-\textit{single} heaviest latency-incurring edge on the critical path is
-incurred. TODO: move this figure and explanation to the background, would
-provide a nice introduction and subsequent conclusion here
-
-\begin{figure}[ht]
-    \centering
-    \includegraphics[width=0.6\textwidth]{figures/map-reduce.png}
-    \caption{A partial DAG for map and reduce}
-    \label{fig:map-reduce-dag}
-\end{figure}
-
-TODO: describe how futures can be incorporated into analysis of parallel
-computations using DAG model
-
 \section{Survey of Related Work}
+
+Many variants of work-stealing have been researched in the literature,
+particularly by building on top of the quintessential incantation of modern
+work-stealing in \cite{arora_thread_1998}. 
+
+Latency-hiding work-stealing specifically is a relatively unexplored subject
+area, and not much on the topic can be found.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -1513,6 +1527,7 @@ provide an \texttt{execute} function through the \texttt{Job} trait can be
 represented using a single uniform \texttt{JobRef} type.
 
 \subsubsection*{FutureJobs}
+\label{subsubsection:futurejobs}
 
 The \texttt{StackJob} type is intended for regular closures: functions that can
 not be suspended/resumed and do not incur latency. To support asynchronous
@@ -1703,7 +1718,11 @@ be found in \cite{noauthor_rayon-lh_nodate}.
 \section{Experimental Setup}
 \label{section:experimental_setup}
 
-TODO: talk about averaging 10 runs too 
+Benchmarks were run on a Ubuntu 18.04.6 machine with 540 GB RAM and two Intel
+Xeon Gold 6154 processors, each with 18 physical 3-GHz cores, for a total of 36
+physical cores. Hyperthreading is enabled. Benchmarks are compiled using rustc
+1.57.0 in the bench profile (full optimizations). Each data point is the average
+of ten runs.
 
 \section{Latency-Hiding Efficiency}
 \label{section:latency-hiding_efficiency}
@@ -1827,10 +1846,10 @@ This section seeks to answer the question of varying the ratio of compute vs I/O
 bound operations in the workload. Whereas section
 \ref{section:latency-hiding_efficiency} is concerned about the effects of
 \textit{injecting} latency by keeping \(T_1\) constant and only varying the
-amount of latency \(T_\text{latency}\), this section is interested in what
-happens when the \textit{sum} of total work and latency \(T_1 +
-T_\text{latency}\) is held constant but the individual parameters adjusted. In
-other words, how does ProWS-R perform under workloads of varying natures?
+amount of latency \(l\), this section is interested in what
+happens when the \textit{sum} of total work and latency \(l\) is held constant
+but the individual parameters adjusted. In other words, how does ProWS-R perform
+under workloads of varying natures?
 
 This parameter sweep benchmark runs the naive recursive parallel Fibonacci
 computation with a serial base case of zero, with the number of worker threads
@@ -1919,6 +1938,53 @@ drop-in replacement for Rayon, significantly improving performance of workloads
 containing latency-incurring operations without penalizing regular compute-bound
 workloads.
 
+Although not without its limitations, described below, ProWS-R and Rayon-LH
+offer a very attractive improvement on the current status quo work-stealing
+implementations.
+
+\subsection{Limitations}
+
+One major limitation of Rayon-LH must be acknowledged, which is how it deals
+with encountering suspended futures and re-entering the scheduling loop. In the
+current implementation, every time a blocked future is encountered and the
+scheduling loop re-entered, a new stack frame is allocated when calling the
+scheduling loop function. This is not ideal, since when a large number of
+suspended futures are quickly encountered, a new stack frame is allocated for
+each one of them, easily leading to a stack overflow. At the moment this is
+dealt with by just increasing the thread stack size, but a more robust solution
+like finding a way to inline the call to the scheduling loop would be
+preferable.
+
+Another limitation is that in its current form, the only futures that can be
+used with Rayon-LH must come from the async-io crate
+\cite{noauthor_async-io_2022}. This is because Rust does not provide a way to
+abstract asynchronous runtimes, meaning future libraries and runtimes must be
+tightly coupled. As such this is not as much of a limitation of Rayon-LH as it
+is of the Rust language itself. Unfortunately, this is a more fundamental
+shortcoming of the Rust language that without major ecosystem changes will
+likely not see a solution \cite{-funswitch-loops_abstracting_2022}.
+
+Additionally, worker threads in the current implementation are not pinned to
+physical cores, and there could potentially be some performance improvements if
+that were instead the case. By pinning, worker threads could enjoy reassurance
+that they would always run on the same processor, benefiting from increased
+memory locality. Pinning to cores was attempted during an earlier implementation
+of Rayon-LH, but a robust method of pinning worker threads to \textit{physical}
+cores was not achieved in the scope of the project (the implementation tried
+pinning worker threads to separate logical cores but potentially used the same
+physical core, to appalling effect on performance).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\chapter{Conclusion: Patience Is Not a Virtue}
+
+This project has shown that the prototype latency-hiding work-stealing
+implementation has a lot of promise, and warrants a deeper investigation.
+
+\section{Summary}
+
+\section{Lessons Learned: Concurrent Programming is Hard}
+
 Undoubtedly, the experience of implementing Rayon-LH was quite challenging.
 The difficulties faced in this project largely stem from the inherent issue that
 concurrent programming is simply hard to wrap one's mind around. The intractable
@@ -1943,17 +2009,6 @@ operations and not others. Much like a detective investigating forensic evidence
 at a crime scene, the interleaved lines of thread logger output provided many
 clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
 ``elementary, my dear Watson''.
-
-TODO: move concurrency difficulties here, talk about pinning, stack overflow,
-tied to async-io
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-\chapter{Conclusion: Patience Is Not a Virtue}
-
-\section{Summary}
-
-\section{Lessons Learned: Concurrent Programming is Hard}
 
 \section{Future Work}
 
