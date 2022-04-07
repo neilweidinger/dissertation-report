@@ -172,22 +172,19 @@ event notification facilities is required. Singer et al.
 \cite{singer_scheduling_2019} present an extension of Cilk, called Cilk-L, that
 incorporates such runtime support with encouraging results.
 
-TODO: better transition to talking about Rust
-
-Rust \cite{matsakis_rust_2014} is a relatively new systems level programming
-language aimed at delivering the low-level abilities and performance
-characteristics of languages like C and C++, while ensuring far greater levels
-of memory and thread safety. It achieves this by using a rich static type
-system to allow the compiler to infer when and how values are safe to use,
-termed the ``borrow checker''. It also has first class support for asynchronous
-programming through the use of futures (futures in Rust have some idiosyncrasies
-described in section \ref{section:futures}) and a quickly growing
-ecosystem surrounding asynchronous programming in Rust. Rayon
-\cite{noauthor_rayon_2022, noauthor_baby_nodate, stone_how_2021} is a
+Rayon \cite{noauthor_rayon_2022, noauthor_baby_nodate, stone_how_2021} is a
 widely-used library level implementation for Rust programs (Cilk and its
 derivatives consist of a both Cilk to C level compiler and a runtime library) of
 work-stealing that supports task-level fork-join parallelism, but without
-latency-hiding.
+latency-hiding. Rust \cite{matsakis_rust_2014} is a relatively new systems level
+programming language aimed at delivering the low-level abilities and performance
+characteristics of languages like C and C++, while ensuring far greater levels
+of memory and thread safety. It achieves this by using a rich static type system
+to allow the compiler to infer when and how values are safe to use, termed the
+``borrow checker''. It also has first class support for asynchronous programming
+through the use of futures (futures in Rust have some idiosyncrasies described
+in section \ref{section:futures}) and a quickly growing ecosystem surrounding
+asynchronous programming in Rust.
 
 Futures in Rust, unlike the hand-written futures used in Cilk-L, are easily
 composable: the compiler automatically generates a state machine that represents
@@ -197,44 +194,71 @@ code, and powerful future combinators \cite{noauthor_futuresfuture_nodate}.
 Supporting this behavior requires a few additional capabilities than what ProWS
 provides directly.
 
-\section{Aims}
+\section{Goals and Contributions}
 
-The aim of this project is to provide an implementation, building heavily upon
-the work of Singer et al., of latency-hiding work-stealing that seamlessly
-integrates with the Rust language and ecosystem.
+The goal of this project is to provide an implementation, building upon the work
+of Singer et al., of a latency-hiding work-stealing scheduler that seamlessly
+integrates with the Rust language and ecosystem. The implementation must take
+into consideration the stringent safety guarantees of the Rust language, while
+also ensuring competitive performance with existing work-stealing
+implementations.
 
-This report describes the
-design, implementation, and evaluation of ProWS-R, a variant of ProWS that is
-adapted for the particular futures found in Rust and its stringent safety
-guarantees.
+The primary contributions of this project are ProWS-R and Rayon-LH. This report
+describes ProWS-R, a variant of ProWS that is adapted for the particular futures
+found in Rust, and the accompanying runtime system Rayon-LH, a fork of the Rayon
+library. A detailed explanation of the necessary runtime facilities to support
+ProWS-R is given.
 
-This report describes ProWS-R, a variant of ProWS that is adapted for the
-particular futures found in Rust, as well as taking careful consideration with
-regards to the stringent safety guarantees and ergonomics of the language. The
-accompanying runtime library Rayon-LH, a fork of the Rayon library, is also
-presented. The design, implementation and subsequent evaluation of ProWS-R are
-???
-
-The explicit goals of this project are as follows:
-
-\begin{itemize}
-    \item TODO: explicit goals
-    \item Present a latency-hiding work-stealing algorithm, that takes
-        accommodates the language-level futures construct in Rust
-    \item Develop a prototype implementation of 
-\end{itemize}
-
-\section{Contributions}
+A key contribution of Rayon-LH is the \texttt{FutureJob} construct: this
+component merges the theoretical concepts in ProWS-R with the real-world
+asynchronous programming machinery found in the Rust language. It also
+takes care to take advantage of existing operating system event queue
+functionalities to efficiently hide latency. Another important contribution are
+the steps taken to ensure thread safety in the highly concurrent scheduler
+implementation: the ProWS-R algorithm on its own provides no such guidance, and
+the \texttt{Stealables} construct is key to ensuring correct operation amidst
+complex concurrent interactions.
 
 \section{Report Outline}
+
+The report begins with chapter
+\ref{chapter:background:_what_andy_giveth,_bill_taketh}, with an introduction to
+the current backdrop of modern parallel computing. It also provides overviews of
+important background knowledge, like analysis of multithreaded computations and
+representing asynchronous computations using futures.
+
+Chapter \ref{chapter:conceptual_latency-hiding:_to_wait_or_not_to_wait?}
+provides a description of ProWS-R, the latency-hiding work-stealing algorithm
+adapted for use with Rust. Chapter
+\ref{chapter:implementation:_time_is_an_illusion} builds on the theoretical
+knowledge presented in the previous chapter to illustrate the concrete
+implementation of Rayon-LH, a latency-hiding work-stealing scheduler.
+
+Chapter
+\ref{chapter:evaluation:_to_superlinear_and_beyond_(not_really..._just_superlinear)}
+delivers an in-depth evaluation of the performance of ProWS-R and Rayon-LH.
+Multiple benchmarks to evaluate the implementation from various angles are
+discussed.
+
+Chapter \ref{chapter:conclusion:_patience_is_not_a_virtue} rounds out the report
+with a summary of the findings and experience. Ideas for future work are also
+put forward.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Background: What Andy Giveth, Bill Taketh}
+\label{chapter:background:_what_andy_giveth,_bill_taketh}
 
-This chapter provides an introduction to TODO
+This chapter provides an overview of the circumstances that birth the motivation
+for this project in sections \ref{section:modern_computer_architecture},
+\ref{section:rise_of_the_multicore_era}, and \ref{section:parallel_computing}.
+An introduction to classic work-stealing and the supporting theory is provided
+in section \ref{section:classic_work-stealing}. Futures are briefly described in
+section \ref{section:futures}, and a survey of related work in section
+\ref{section:survey_of_related_work}.
 
 \section{Modern Computer Architecture}
+\label{section:modern_computer_architecture}
 
 Ever since the advent of general-purpose microprocessor based computer systems,
 transistor density has been and continues to double roughly every two years.
@@ -270,6 +294,7 @@ clock frequencies to deliver performance gains \cite{parkhurst_single_2006}. The
 multicore era was born.
 
 \subsection{Rise of the Multicore Era}
+\label{section:rise_of_the_multicore_era}
 
 While the doubling of transistor count observation of Moore's law is still going
 strong, the historic predictable free performance lunch it became associated
@@ -354,9 +379,10 @@ synchronization of memory accesses and control flow, race conditions,
 deadlocks and livelocks, lock-free programming and atomic operations, memory
 models, workload partitioning, balancing, and scheduling, and many more. These
 are all issues that stem from the intrinsic difficulty of coordinating multiple
-independent entities that access shared resources (TODO: think of ...).
+independent entities that access shared resources.
 
 \section{Classic Work-Stealing}
+\label{section:classic_work-stealing}
 
 To combat the previously mentioned issues, work-stealing schedulers are
 frequently used, as they allow programmers to express the \textit{logical}
@@ -399,10 +425,9 @@ This only becomes an issue when one core finishes all of its sub-problems, but
 other cores are still working on theirs. An entire core is sitting around
 waiting and doing nothing, even though it could be helping its fellow core
 compatriots out with the workload instead. Ideally, it would be nice if this
-core could \textit{steal} work from another core \footnote{Who doesn't like
-offloading work onto others?}, so that all cores are being fully utilized to
-making progress on the original problem. How to best implement such a scheme is
-the raison d'être of work-stealing schedulers.
+core could \textit{steal} work from another core, so that all cores are being
+fully utilized to making progress on the original problem. How to best implement
+such a scheme is the raison d'être of work-stealing schedulers.
 
 \subsection{DAG model of Parallel Computations}
 
@@ -429,7 +454,8 @@ a path does not exist, they are (logically) in parallel, meaning they
 \textit{\textbf{may}} execute in parallel (does not specify that they
 \textit{\textbf{will}} execute in parallel, only that at runtime a scheduler is
 allowed to choose to run them in parallel by assigning them to available
-processors).
+processors). A node is \textbf{\textit{ready}} when all of its predecessor nodes
+have executed.
 
 \subsection{Analysis of Parallel Computations}
 \label{subsection:analysis_of_parallel_computations}
@@ -562,30 +588,62 @@ that will \textit{eventually} be available \cite{halstead_implementation_1984,
 halstead_multilisp_1985}.
 
 The Rust programming language supports futures and provides ergonomic language
-level features to create and interact with them. Very briefly, futures in Rust
-can be thought of as state machines that represent the state of an asynchronous
-computation. These state machines can be manually defined, or more commonly,
-generated by the compiler. A future is no use on its own though - it requires an
-\textit{\textbf{executor}} to \textbf{\textit{poll}} it to completion. A future,
-when polled, either indicates that it is ready (completed) or is pending
-(blocked). If blocked, the executor will go find another future to poll in the
-meantime, and when the blocked future is ready to make progress again notifies
-the executor through the use of a \textbf{\textit{waker}}. The waker can
-essentially be thought of as a callback function that lets the executor know the
-future can be polled again. Additionally, since a future may hold references to
-fields within it self, a future may not move in memory once it has first been
-polled (otherwise these references would become invalidated, leading to dangling
-pointers). Rust statically confirms at compile-time that futures do not move in
-memory through the use of its type system.
+level features to create and interact with them \cite{noauthor_future_nodate}.
+Very briefly, futures in Rust can be thought of as state machines that represent
+the state of an asynchronous computation. These state machines can be manually
+defined, or more commonly, generated by the compiler. A future is no use on its
+own though - it requires an \textit{\textbf{executor}} to \textbf{\textit{poll}}
+it to completion. A future, when polled, either indicates that it is ready
+(completed) or is pending (blocked). If blocked, the executor will go find
+another future to poll in the meantime, and when the blocked future is ready to
+make progress again notifies the executor through the use of a
+\textbf{\textit{waker}}. The waker can essentially be thought of as a callback
+function that lets the executor know the future can be polled again.
+Additionally, since a future may hold references to fields within it self, a
+future may not move in memory once it has first been polled (otherwise these
+references would become invalidated, leading to dangling pointers). Rust
+statically confirms at compile-time that futures do not move in memory through
+the use of its type system.
 
 \section{Survey of Related Work}
+\label{section:survey_of_related_work}
 
 Many variants of work-stealing have been researched in the literature,
 particularly by building on top of the quintessential incantation of modern
-work-stealing in \cite{arora_thread_1998}. 
+work-stealing in \cite{arora_thread_1998}. Although there are many classic
+work-stealing implementations like Cilk \cite{frigo_implementation_1998} and Intel
+TBB \cite{noauthor_advanced_nodate}, of particular interest are those that
+provide alternative work-stealing algorithms or different takes on handling
+blocking operations.
 
-Latency-hiding work-stealing specifically is a relatively unexplored subject
-area, and not much on the topic can be found.
+An interesting approach to blocking operations in a work-stealing implementation
+is Concurrent Cilk \cite{zakian_concurrent_2016}: it allows worker threads to
+suspend the current execution context when encountering a blocking I/O
+operation, and try to find something else to do, in essence trying to hide
+latency. Tasks start out being scheduled by work-stealing but can be promoted to
+a lightweight thread when encountering a blocking operation. Multiple suspended
+execution contexts are stored with the worker thread that suspended them,
+meaning it is unfortunately possible for the deques that are stored among
+workers to possibly become extremely unbalanced. Also, their system does not
+have a provable time bound.
+
+X10 \cite{charles_x10_2005} and Habenero \cite{cave_habanero-java_2011} support
+blocking operations by providing synchronization primitives. These primitives,
+however, can cause worker threads to truly simply block, and the runtime
+compensates for this by simply creating a new worker thread to replace the
+blocked one. These implementations also do not provide provably efficient
+performance bounds when dealing with blocking operations.
+
+Research into specifically latency-hiding work-stealing is a (surprisingly)
+relatively unexplored topic, and this report rides on the coattails of the state
+of the art work done in \cite{muller_latency-hiding_2016,
+singer_proactive_2019}. Muller and Acar in \cite{muller_latency-hiding_2016}
+present a latency-hiding work-stealing scheduling algorithm that generalizes
+classic work-stealing to use multiple deques per worker. Singer et al. in
+\cite{singer_proactive_2019} put forward a similar algorithm, but with the
+difference that the algorithm \textit{proactively} steals - as soon as a worker
+thread encounters a blocked operation it steals, as opposed to looking into its
+local deque. It also features a better bound on execution time.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -735,8 +793,7 @@ During execution of the algorithm, deques are in one of the following states:
         the latency of the operation. This node is \textit{not} in the deque; it
         will later be pushed onto the deque again by a callback when the
         operation completes. The deque may still contain other ready nodes that
-        are available for worker threads to steal. TODO: make sure ``ready''
-        nodes is defined
+        are available for worker threads to steal.
     \item \textbf{Resumable:} All nodes in the deque are ready, but is not being
         actively worked on by a worker thread. These nodes can be stolen off the
         top of the deque by worker threads and then executed.
@@ -829,6 +886,19 @@ Without the extra logic to deal with futures (lines \ref{line:future_start} -
 \end{algorithmic}
 \end{algorithm}
 
+Worker threads work off the bottom of their active deques. When a node is popped
+from the bottom, it is first executed and then its children (if any) are pushed
+to the bottom of the deque. Special care is taken for when a node that was just
+executed is found to have encountered a blocked future (line
+\ref{line:blocked_future}): the worker thread's active deque is immediately
+suspended and a callback is installed on the future that will reschedule it for
+execution again once it's latency-incurring operation completes. Deque
+suspension for the active deque (line \ref{line:deque_suspension}) involves
+changing its state to Suspended, removing it from the worker thread's stealable
+set, and if it is not empty, adding it to the stealable set of another randomly
+selected worker thread. If the deque is empty, it will not be found in any
+stealable set, so that worker threads can not try to fruitlessly steal from it. 
+
 \begin{algorithm}
 \caption{Find Node ($w$ is the currently executing worker thread)}
 \label{alg:find_node}
@@ -848,18 +918,16 @@ Without the extra logic to deal with futures (lines \ref{line:future_start} -
 \end{algorithmic}
 \end{algorithm}
 
-Worker threads work off the bottom of their active deques. When a node is popped
-from the bottom, it is first executed and then its children (if any) are pushed
-to the bottom of the deque. Special care is taken for when a node that was just
-executed is found to have encountered a blocked future (line
-\ref{line:blocked_future}): the worker thread's active deque is immediately
-suspended and a callback is installed on the future that will reschedule it for
-execution again once it's latency-incurring operation completes. Deque
-suspension for the active deque (line \ref{line:deque_suspension}) involves
-changing its state to Suspended, removing it from the worker thread's stealable
-set, and if it is not empty, adding it to the stealable set of another randomly
-selected worker thread. If the deque is empty, it will not be found in any
-stealable set, so that worker threads can not try to fruitlessly steal from it. 
+The callback (line \ref{line:callback}) that is installed on the blocked future
+(line \ref{line:install_callback}) is the critical aspect for enabling
+latency-hiding. In order to try and keep worker threads busy with work as much
+as possible so that progress is being made on the computation with full hardware
+resource utilization, it's undesirable for worker threads to perform any
+operations that are not directly related to executing work nodes (contributes to
+scheduler overhead). As such, the callback is responsible for executing when
+completion of a blocked future is detected, and rescheduling the future node for
+execution by a worker thread. A more concrete explanation of how this occurs is
+given in section \ref{section:required_runtime_support_for_latency_hiding}.
 
 \begin{algorithm}
 \caption{Deque Suspension ($w$ is the currently executing worker thread)}
@@ -874,39 +942,6 @@ stealable set, so that worker threads can not try to fruitlessly steal from it.
         \EndIf
     \EndFunction
     \algstore{suspend}
-\end{algorithmic}
-\end{algorithm}
-
-The callback (line \ref{line:callback}) that is installed on the blocked future
-(line \ref{line:install_callback}) is the critical aspect for enabling
-latency-hiding. In order to try and keep worker threads busy with work as much
-as possible so that progress is being made on the computation with full hardware
-resource utilization, it's undesirable for worker threads to perform any
-operations that are not directly related to executing work nodes (contributes to
-scheduler overhead). As such, the callback is responsible for executing when
-completion of a blocked future is detected, and rescheduling the future node for
-execution by a worker thread. A more concrete explanation of how this occurs is
-given in section \ref{section:required_runtime_support_for_latency_hiding}.
-
-\begin{algorithm}
-\caption{Callback Procedure (called upon completion of the blocked future $f$)}
-\label{alg:callback}
-\begin{algorithmic}[1]
-    \algrestore{suspend}
-    \Function{callBack}{$suspendedDeq$} \label{line:callback}
-        \If{$suspendedDeq \text{.state} \neq \textbf{SUSPENDED} $}
-            \label{line:sus_check}
-            \State \textbf{return}
-        \EndIf
-        \State $suspendedDeq \text{.pushBottom(} f \text{)}$ \Comment $f$ is a node
-            that can be executed
-        \State $suspendedDeq\text{.state} \gets \textbf{RESUMABLE}$
-        \If{$! suspendedDeq \text{.inStealableSet()}$}
-            \State $\text{chooseRandomVictim().stealableSet.add(} suspendedDeq
-                \text{)}$
-        \EndIf
-    \EndFunction
-    \algstore{callback}
 \end{algorithmic}
 \end{algorithm}
 
@@ -937,6 +972,28 @@ to a random worker thread's stealable set if the deque is not already in one. By
 doing this the callback makes the now-resumable future ready to be executed by a
 worker thread again.
 
+\begin{algorithm}
+\caption{Callback Procedure (called upon completion of the blocked future $f$)}
+\label{alg:callback}
+\begin{algorithmic}[1]
+    \algrestore{suspend}
+    \Function{callBack}{$suspendedDeq$} \label{line:callback}
+        \If{$suspendedDeq \text{.state} \neq \textbf{SUSPENDED} $}
+            \label{line:sus_check}
+            \State \textbf{return}
+        \EndIf
+        \State $suspendedDeq \text{.pushBottom(} f \text{)}$ \Comment $f$ is a node
+            that can be executed
+        \State $suspendedDeq\text{.state} \gets \textbf{RESUMABLE}$
+        \If{$! suspendedDeq \text{.inStealableSet()}$}
+            \State $\text{chooseRandomVictim().stealableSet.add(} suspendedDeq
+                \text{)}$
+        \EndIf
+    \EndFunction
+    \algstore{callback}
+\end{algorithmic}
+\end{algorithm}
+
 When a worker thread cannot find work to execute in its active deque (line
 \ref{line:no_work}), it must become a thief and steal from elsewhere. The steal
 procedure is outlined in algorithm \ref{alg:steal}. First, a random victim deque
@@ -956,42 +1013,6 @@ none (which is the case when a blocked future is encountered on line
 \ref{line:blocked_future}). If a node could not be stolen, the steal procedure
 is repeated.
 
-\begin{algorithm}
-\caption{Steal Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
-\begin{algorithmic}[1]
-    \algrestore{callback}
-    \Function{steal}{}
-        \While{$true$}
-            \State $victim \gets \text{chooseRandomVictim()} $
-                \label{line:choose_random_victim}
-            \State $ victimDeque \gets victim \text{.stealableSet.chooseRandom()} $
-                \label{line:choose_random}
-            \If{$victimDeque \text{.state} = \textbf{MUGGABLE}$}
-                \State $ \textbf{return } \text{setToActive(} victim, victimDeque \text{)}$ 
-            \EndIf
-            \State $ node \gets victimDeque \text{.popTop()} $
-            \If{$ victimDeque \text{.isEmpty()} $}
-                \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
-                \State $ \text{rebalanceStealables(} victim \text{)} $
-                    \label{line:rebalance_1}
-                \If{$ victimDeque \text{.state} \neq \textbf{SUSPENDED} $}
-                    \State $ \text{freeDeque(} victimDeque \text{)} $
-                \EndIf
-            \ElsIf{$victimDeque \text{.state} = \textbf{RESUMABLE} $}
-                \State $victimDeque\text{.state} \gets \textbf{MUGGABLE}$
-            \EndIf
-            \If{$node != \text{null}$}
-                \If{$ w \text{.active} = \text{null} $}
-                    \State $w \text{.active} \gets \text{createNewDeque()}$
-                \EndIf
-                \State $ \textbf{return } node $
-            \EndIf
-        \EndWhile
-    \EndFunction
-    \algstore{steal}
-\end{algorithmic}
-\end{algorithm}
-
 The calls to \texttt{rebalanceStealables} on lines \ref{line:rebalance_1} and
 \ref{line:rebalance_2} are to balance the load of stealable deques among the
 worker thread stealable sets. This is done so that the chance of selecting a
@@ -1000,25 +1021,6 @@ when a deque has been removed from a worker thread \(v\)'s stealable set - it
 randomly chooses another victim \(v^\prime\) and if \(v = v^\prime\) nothing is
 done, otherwise a stealable deque is moved from \(v^\prime\) to \(v\) if
 \(v^\prime\) has one.
-
-\begin{algorithm}
-\caption{Set to Active Deque Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
-\begin{algorithmic}[1]
-    \algrestore{steal}
-    \Function{setToActive}{$victim, victimDeque$}
-        \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
-        \State $ w \text{.stealableSet.add(} victimDeque \text{)} $
-        \State $ victimDeque \text{.state} = \textbf{ACTIVE} $
-        \State $ \text{rebalanceStealables(} victim \text{)} $
-            \label{line:rebalance_2}
-        \If{$ w \text{.active.isEmpty()} $}
-            \State $ \text{freeDeque(} w \text{.active)} $
-        \EndIf
-        \State $ w \text{.active} \gets victimDeque $
-        \State $ \textbf{return } w \text{.active.popBottom()} $
-    \EndFunction
-\end{algorithmic}
-\end{algorithm}
 
 \subsection{Performance Bounds}
 \label{subsection:performance_bounds}
@@ -1235,9 +1237,15 @@ the \textbf{\textit{Stealables}} construct (abstracts over StealableSets and
 manages scheduler shared state), \textbf{\textit{WorkerThreads}} (worker threads
 in thread pool), and \textbf{\textit{Jobs}} (represent work nodes). Additional
 minor implementation details deemed not critical to understanding the
-implementation are omitted.
+implementation are omitted. A diagram of the architecture can be found in figure
+\ref{fig:arch}.
 
-TODO: put in a diagram of the architecture
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/arch.png}
+    \caption{Architecture overview (example with four WorkerThreads)}
+    \label{fig:arch}
+\end{figure}
 
 \subsubsection*{The Registry}
 
@@ -1344,8 +1352,7 @@ a constant time \texttt{remove} operation: the index of the desired deque ID to
 be removed from the set is looked up in the hash map, the Deque ID in the array
 at that index overwritten with the Deque ID at the end of the array, the array
 truncated by one, and the hash map indices updated/removed. All operations are
-guarded by a lock to support concurrent operation. TODO: should I remove all
-this fluff on implementation detail
+guarded by a lock to support concurrent operation.
 
 \subsubsection*{The Stealables Struct}
 \label{subsubsection:the_stealables_struct}
@@ -1711,9 +1718,10 @@ compute vs I/O bound workloads in section
 \ref{section:compute_vs_i/o_bound_workloads}, and the scheduler overhead
 compared to classical work-stealing \ref{section:rayon-lh_scheduler_overhead}.
 The experimental setup is described in section \ref{section:experimental_setup}
-and the insights and limitations of the implementation are discussed in section
-\ref{section:insights_and_limitations}. All benchmark results and programs can
-be found in \cite{noauthor_rayon-lh_nodate}.
+and the limitations of the implementation are discussed in section
+\ref{section:limitations}. A summary can be found in section
+\ref{section:evaluation_summary}, and all benchmark results and programs can be
+found in \cite{noauthor_rayon-lh_nodate}.
 
 \section{Experimental Setup}
 \label{section:experimental_setup}
@@ -1829,15 +1837,18 @@ in separate hyperthreads. Once this boundary is crossed, speedups of the
 latency-hiding schedulers (both ProWS-R and Ideal) begin to degrade. This is
 presumably due to worker threads on the same physical core contending for the
 same physical processor execution units, as by hiding latency they can focus
-instead on computational work in the DAG. The classic scheduler with a latency
-of 1 millisecond suffers the same fate. With longer latency values, the classic
-scheduler sees a perfect linear speedup regardless of using more worker threads
-than physical cores, since when incurring latency the worker threads become I/O
-bound (primarily waiting around doing nothing), and the hyperthreads are no
-longer in contention. When using latency-hiding schedulers, or for that matter
-any work-stealing implementation running primarily compute-bound workloads,
-setting the number of worker threads \(P\) to be the number of physical
-processors appears to be the best choice to maximize performance.
+instead on computational work in the DAG \footnote{An alternative hypothesis is
+that the latencies allow for the threads to be rescheduled onto other physical
+cores, potentially having to suffer costs like cross socket communications.}.
+The classic scheduler with a latency of 1 millisecond suffers the same fate.
+With longer latency values, the classic scheduler sees a perfect linear speedup
+regardless of using more worker threads than physical cores, since when
+incurring latency the worker threads become I/O bound (primarily waiting around
+doing nothing), and the hyperthreads are no longer in contention. When using
+latency-hiding schedulers, or for that matter any work-stealing implementation
+running primarily compute-bound workloads, setting the number of worker threads
+\(P\) to be the number of physical processors appears to be the best choice to
+maximize performance.
 
 \section{Compute vs I/O Bound Workloads}
 \label{section:compute_vs_i/o_bound_workloads}
@@ -1869,7 +1880,8 @@ dictate whether the blocking sleep call or future will be used.
 \end{figure}
 
 A plot showing the parameter sweep benchmark results is shown in figure
-\ref{fig:param_sweep}. As expected, the greatest speedups come from when the
+\ref{fig:param_sweep} \footnote{Please note matplotlib has limited capabilities
+for 3D plots, hence the awkward rendering.}. As expected, the greatest speedups come from when the
 workload consists of a high percentage of I/O bound nodes. Speedup is also
 increased when longer latency values are used, but not to the extent that the
 I/O bound node percentage does. Essentially, when there is an abundance of
@@ -1914,8 +1926,7 @@ speedup is achieved all the way until the number of physical cores is reached,
 until performance completely flatlines. Performance flatlining is to be
 expected, as with a pure compute-bound workload each worker thread is making
 full use of the processor execution units, and hyperthreading provides no
-benefit (TODO: why does hyperthreading \textit{decrease} performance with
-latency?).
+benefit.
 
 As shown in the plot, ProWS-R suffers no performance regression: this is by
 design, as ProWS-R executes the exact same work-stealing algorithm as classic
@@ -1927,22 +1938,8 @@ no need to decide between which scheduler to use depending on what kind of
 workload one may be running, Rayon-LH always provides greater than or equal
 speedups.
 
-\section{Insights and Limitations}
-\label{section:insights_and_limitations}
-
-The results are encouraging: ProWS-R and Rayon-LH always provide greater than or
-equal execution time speedups. Whether one's workload is primarily I/O or
-compute bound, it does not matter, as ProWS-R and Rayon-LH can be used
-regardless of workload type. Rayon-LH can essentially be used as a sort of
-drop-in replacement for Rayon, significantly improving performance of workloads
-containing latency-incurring operations without penalizing regular compute-bound
-workloads.
-
-Although not without its limitations, described below, ProWS-R and Rayon-LH
-offer a very attractive improvement on the current status quo work-stealing
-implementations.
-
-\subsection{Limitations}
+\section{Limitations}
+\label{section:limitations}
 
 One major limitation of Rayon-LH must be acknowledged, which is how it deals
 with encountering suspended futures and re-entering the scheduling loop. In the
@@ -1974,14 +1971,45 @@ cores was not achieved in the scope of the project (the implementation tried
 pinning worker threads to separate logical cores but potentially used the same
 physical core, to appalling effect on performance).
 
+\section{Evaluation Summary}
+\label{section:evaluation_summary}
+
+The results are encouraging: ProWS-R and Rayon-LH always provide greater than or
+equal execution time speedups. Whether one's workload is primarily I/O or
+compute bound, it does not matter, as ProWS-R and Rayon-LH can be used
+regardless of workload type (section
+\ref{section:compute_vs_i/o_bound_workloads}). Rayon-LH can essentially be used
+as a sort of drop-in replacement for Rayon, significantly improving performance
+of workloads containing latency-incurring operations (section
+\ref{section:latency-hiding_efficiency}) without penalizing regular
+compute-bound workloads (section \ref{section:rayon-lh_scheduler_overhead}).
+
+Although not without its limitations, ProWS-R and Rayon-LH offer a very
+attractive improvement on the current status quo of work-stealing
+implementations. Programs that were previously limited to using Rayon or other
+such classic work-stealing implementations, and necessitated workarounds like
+spawning additional operating system threads to implement interacting with
+latency-incurring operations, can now be empowered to make much greater use of
+such operations without fear of performance hits.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \chapter{Conclusion: Patience Is Not a Virtue}
+\label{chapter:conclusion:_patience_is_not_a_virtue}
 
 This project has shown that the prototype latency-hiding work-stealing
-implementation has a lot of promise, and warrants a deeper investigation.
+implementation has a lot of promise, and warrants further research into the
+area. Overall, the project was a success - ProWS-R provided the theoretical
+foundations to build a latency-hiding work-stealing scheduler, realized by the
+Rayon-LH runtime library.
 
-\section{Summary}
+The scheduling algorithm provided by ProWS-R neatly adapts to Rust futures while
+keeping the performance characteristics of classic work-stealing when executing
+regular jobs. The Rayon-LH implementation demonstrates a significant practical
+performance improvement over the classic work-stealing implementation in Rayon.
+The evaluations demonstrate that Rayon-LH provides greater than or equal
+performance to classic work-stealing, meaning the scheduler provides essentially
+a superset of functionality.
 
 \section{Lessons Learned: Concurrent Programming is Hard}
 
@@ -2012,15 +2040,104 @@ clues when debugging Rayon-LH. Unfortunately, concurrent programming is far from
 
 \section{Future Work}
 
+This project has laid the groundwork for further research into latency-hiding
+work-stealing schedulers. Throughout the design of ProWS-R and implementation of
+Rayon-LH, many areas of further exploration were revealed. Specifically:
+
+\begin{itemize}
+    \item A latency-hiding work-stealing algorithm even more tailored to Rust
+        could be considered. ProWS-R is largely based off of ProWS, which cannot
+        make the same assumptions as an algorithm specific to Rust can. For
+        example, the entire reason ProWS must store multiple deques in the
+        system, is that nodes when suspended are eagerly stored in deques.
+        ProWS-R already breaks from this in that suspended nodes are only lazily
+        pushed back to their respective deques when they are resumable again. A
+        new algorithm could take this even further, and perhaps a design where
+        multiple deques are not even necessary due to the lazy nature of dealing
+        with suspended deques could be possible (such an approach could greatly
+        reduce shared state that is currently found in the \texttt{Stealables}
+        construct).
+    \item A higher level abstraction over spawning \texttt{FutureJob}s. The
+        \texttt{FutureJob} construct is a rather low level primitive, that while
+        makes it trivial to inject latency-incurring operations, is not the most
+        flexible or user-friendly interface. Just like how Rayon provides a
+        parallel iterator library over the standard work-stealing \texttt{join}
+        primitive, a similar higher level interface for latency-incurring
+        operations can be imagined. Perhaps an interface to deal with streams
+        (asynchronous iterators) can be investigated.
+    \item More interesting uses of parallelism using futures could be
+        demonstrated. Futures provide a greater range of parallelism
+        possibilities than classic work-stealing with nested parallelism can
+        \cite{spoonhower_beyond_2009}, and with the latency-hiding capabilities
+        that this project provides perhaps novel use cases can be experimented
+        with. Parallel pipelines, for example, are one such idea
+        \cite{noauthor_pipelining_nodate}.
+\end{itemize}
+
 \bibliographystyle{plain} \bibliography{references}
 
 %% You can include appendices like this:
-% \appendix
-%
-% \chapter{First appendix}
-%
-% \section{First section}
-%
+\appendix
+
+\chapter{The Steal Procedure}
+
+\begin{algorithm}
+\caption{Steal Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
+\begin{algorithmic}[1]
+    \algrestore{callback}
+    \Function{steal}{}
+        \While{$true$}
+            \State $victim \gets \text{chooseRandomVictim()} $
+                \label{line:choose_random_victim}
+            \State $ victimDeque \gets victim \text{.stealableSet.chooseRandom()} $
+                \label{line:choose_random}
+            \If{$victimDeque \text{.state} = \textbf{MUGGABLE}$}
+                \State $ \textbf{return } \text{setToActive(} victim, victimDeque \text{)}$ 
+            \EndIf
+            \State $ node \gets victimDeque \text{.popTop()} $
+            \If{$ victimDeque \text{.isEmpty()} $}
+                \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
+                \State $ \text{rebalanceStealables(} victim \text{)} $
+                    \label{line:rebalance_1}
+                \If{$ victimDeque \text{.state} \neq \textbf{SUSPENDED} $}
+                    \State $ \text{freeDeque(} victimDeque \text{)} $
+                \EndIf
+            \ElsIf{$victimDeque \text{.state} = \textbf{RESUMABLE} $}
+                \State $victimDeque\text{.state} \gets \textbf{MUGGABLE}$
+            \EndIf
+            \If{$node != \text{null}$}
+                \If{$ w \text{.active} = \text{null} $}
+                    \State $w \text{.active} \gets \text{createNewDeque()}$
+                \EndIf
+                \State $ \textbf{return } node $
+            \EndIf
+        \EndWhile
+    \EndFunction
+    \algstore{steal}
+\end{algorithmic}
+\end{algorithm}
+
+\chapter{The Set to Active Deque Procedure}
+
+\begin{algorithm}
+\caption{Set to Active Deque Procedure ($w$ is the currently executing worker thread)}\label{alg:steal}
+\begin{algorithmic}[1]
+    \algrestore{steal}
+    \Function{setToActive}{$victim, victimDeque$}
+        \State $ victim \text{.stealableSet.remove(} victimDeque \text{)} $
+        \State $ w \text{.stealableSet.add(} victimDeque \text{)} $
+        \State $ victimDeque \text{.state} = \textbf{ACTIVE} $
+        \State $ \text{rebalanceStealables(} victim \text{)} $
+            \label{line:rebalance_2}
+        \If{$ w \text{.active.isEmpty()} $}
+            \State $ \text{freeDeque(} w \text{.active)} $
+        \EndIf
+        \State $ w \text{.active} \gets victimDeque $
+        \State $ \textbf{return } w \text{.active.popBottom()} $
+    \EndFunction
+\end{algorithmic}
+\end{algorithm}
+
 % Markers do not have to consider appendices. Make sure that your contributions
 % are made clear in the main body of the dissertation (within the page limit).
 
