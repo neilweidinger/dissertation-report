@@ -44,18 +44,32 @@
 \date{\today}
 
 \abstract{
-This skeleton demonstrates how to use the \texttt{infthesis} style for
-undergraduate dissertations in the School of Informatics. It also emphasises the
-page limit, and that you must not deviate from the required style.
-The file \texttt{skeleton.tex} generates this document and can be used as a
-starting point for your thesis. The abstract should summarise your report and
-fit in the space on the first page.
+    This report presents ProWS-R and Rayon-LH, a latency-hiding work-stealing
+    algorithm and corresponding runtime library. Motivated by the lack of
+    support for dealing with latency-incurring operations in existing
+    work-stealing implementations, ProWS-R and Rayon-LH extend the work-stealing
+    approach to parallelism by allowing programs to execute asynchronous
+    computations without detrimentally impacting performance. Special care is
+    taken to integrate the implementation with the Rust programming language, in
+    which it is implemented and tailored for. The prototype implementation
+    demonstrates promising speedups in execution time for latency-incurring
+    workloads, empowering a new class of I/O reliant programs to be written that
+    take advantage of the parallelism gains of work-stealing.
 }
 
 \maketitle
 
 \section*{Acknowledgements}
-Acknowledgements go here.
+
+First, I would like to thank my supervisor, Dr. Björn Franke, for his unwavering
+gratitude shown to me throughout the course of the school year. Your support and
+encouragement were what helped make this project what it is.
+
+I would like to also thank my good friend Matt for the advice, wisdom, and fun
+times since we've known each other.
+
+Finally, I'd like to thank my family, for their unending love and understanding.
+Without you I would never be in the fortunate position I am in today.
 
 \tableofcontents
 
